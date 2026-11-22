@@ -1,0 +1,21 @@
+'use strict';
+
+// Copy this file to config.js and edit the values for your install.
+// (config.js is gitignored; env vars PORT / NODE_PORT / RELAY_KEY / NODE_KEY
+// override each value, which is how the e2e tests run a second relay.)
+
+module.exports = {
+  // HTTP API port for the PHP frontend (and the OTA endpoints the nodes use).
+  port: 8080,
+  // Raw TCP port the ESP nodes connect to.
+  nodePort: 7777,
+  // Shared secret the PHP frontend must send as X-API-Key on every /api call.
+  // Generate one: node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+  relayKey: 'CHANGE-ME-relay-key',
+  // Shared secret each node must send in its auth line. Compile the same
+  // value into the sketch (arduino/ESP8266_Node/config.h).
+  nodeKey: 'CHANGE-ME-node-key',
+  // Show a node offline after this long without any message. Must be at
+  // least 3x the sketch's STATUS_INTERVAL_MS (settings.statusIntervalMs).
+  offlineAfterMs: 45000,
+};

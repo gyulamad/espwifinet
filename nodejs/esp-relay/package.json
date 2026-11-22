@@ -1,0 +1,17 @@
+{
+  "name": "esp-relay",
+  "version": "1.0.0",
+  "description": "ESP Wifi Network relay: raw TCP hub for ESP8266 nodes + HTTP API for the PHP frontend (Raspberry Pi)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/run_all.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "license": "MIT"
+}

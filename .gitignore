@@ -1,0 +1,9 @@
+node_modules/
+config.js
+php/espdash/config.php
+data/
+logs/
+firmware/*.bin
+firmware/*.old
+*.zip
+npm-debug.log*

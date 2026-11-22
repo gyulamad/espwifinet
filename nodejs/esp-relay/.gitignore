@@ -1,0 +1,7 @@
+node_modules/
+config.js
+data/
+logs/
+firmware/*.bin
+firmware/*.old
+npm-debug.log*
