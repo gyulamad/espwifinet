@@ -4,11 +4,13 @@
 // page, and the rules for accepting it. The validation lives here as pure
 // functions (unit tested); the file IO lives in SettingsStore (thin).
 //
-// Settings shape:
+// Settings shape (#36: every previously hard-coded value is on the page):
 //   {
 //     gpioPin: 5,                      // the GPIO leg every node switches (task: "one toggle ... on each esp")
 //     gpioActiveHigh: true,            // true: on = HIGH, off = LOW; false: inverted (some relay boards are active-low)
 //     statusIntervalMs: 10000,         // how often nodes report status
+//     offlineAfterMs: 45000,           // silence before a node counts as offline (>= 3x the status interval)
+//     minLogLevel: 'info',             // lowest level nodes queue for the relay (info | warn | error)
 //     names: { "<deviceId>": "Boiler" }   // friendly names, per device
 //   }
 //
@@ -22,6 +24,8 @@ const DEFAULT_SETTINGS = {
   gpioPin: 5,
   gpioActiveHigh: true,
   statusIntervalMs: 10000,
+  offlineAfterMs: 45000,
+  minLogLevel: 'info',
   names: {},
 };
 
@@ -79,6 +83,31 @@ function validateSettings(input) {
     value.statusIntervalMs = interval;
   }
 
+  // offlineAfterMs (#36, was config.js-only): how long a node may stay
+  // silent before the relay shows it offline and forces its link closed.
+  // The floor relative to the status cadence is a hard rule, not a warning:
+  // one lost status must not flip a live node to offline.
+  const offline = Number(input.offlineAfterMs);
+  if (input.offlineAfterMs === undefined) {
+    value.offlineAfterMs = DEFAULT_SETTINGS.offlineAfterMs;
+  } else if (!Number.isInteger(offline) || offline < 30000 || offline > 3600000) {
+    errors.push('offlineAfterMs must be an integer between 30000 and 3600000');
+  } else if (offline < 3 * value.statusIntervalMs) {
+    errors.push('offlineAfterMs must be at least 3x statusIntervalMs (one lost status must not mark a node offline)');
+  } else {
+    value.offlineAfterMs = offline;
+  }
+
+  // minLogLevel (#36, was a fixed "info"): the lowest level nodes queue for
+  // the relay — pushed to every node with the settings message.
+  if (input.minLogLevel === undefined) {
+    value.minLogLevel = DEFAULT_SETTINGS.minLogLevel;
+  } else if (input.minLogLevel === 'info' || input.minLogLevel === 'warn' || input.minLogLevel === 'error') {
+    value.minLogLevel = input.minLogLevel;
+  } else {
+    errors.push('minLogLevel must be one of: info, warn, error');
+  }
+
   if (input.names !== undefined) {
     if (input.names === null || typeof input.names !== 'object' || Array.isArray(input.names)) {
       errors.push('names must be an object of deviceId -> name');
@@ -103,6 +132,9 @@ function validateSettings(input) {
 
 // Loads settings from disk (or defaults when missing/corrupt) and validates
 // what it found — a hand-edited file must pass the same rules as the form.
+// `existed` says whether a settings file was there: the relay keeps its
+// config.js/env values in effect until the operator saves for the first
+// time (that is what makes env overrides work, see server.js).
 function loadSettings(file, readJsonFileFn) {
   let stored = null;
   try {
@@ -111,26 +143,29 @@ function loadSettings(file, readJsonFileFn) {
     return {
       settings: { ...DEFAULT_SETTINGS },
       warnings: [`settings file ${file} could not be read (${e.message}) — defaults are in effect`],
+      existed: false,
     };
   }
-  if (stored === null) return { settings: { ...DEFAULT_SETTINGS }, warnings: [] };
+  if (stored === null) return { settings: { ...DEFAULT_SETTINGS }, warnings: [], existed: false };
   const result = validateSettings(stored);
   if (!result.ok) {
     return {
       settings: { ...DEFAULT_SETTINGS },
       warnings: [`settings file ${file} was invalid (${result.errors.join('; ')}) — defaults are in effect`],
+      existed: true,
     };
   }
-  return { settings: result.value, warnings: [] };
+  return { settings: result.value, warnings: [], existed: true };
 }
 
 // Thin IO wrapper: everything above is pure, this is the only side effect.
 class SettingsStore {
   constructor(file, readJsonFileFn) {
     this.file = file;
-    const { settings, warnings } = loadSettings(file, readJsonFileFn);
+    const { settings, warnings, existed } = loadSettings(file, readJsonFileFn);
     this.settings = settings;
     this.warnings = warnings;
+    this.existed = existed;
   }
 
   // Validates, stores and returns { ok, value | errors, warnings }.

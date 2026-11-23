@@ -87,20 +87,65 @@ class EspStub {
 // (the test build defines the global `ESP` object itself)
 
 enum WifiStatus { WL_DISCONNECTED = 6, WL_CONNECTED = 3 };
+#define WIFI_STA 1
+#ifndef WIFI_SCAN_RUNNING
+#define WIFI_SCAN_RUNNING (-1)
+#endif
+#ifndef WIFI_SCAN_FAILED
+#define WIFI_SCAN_FAILED (-2)
+#endif
 
 class IPAddressStub {
  public:
   String toString() { return String("192.168.1.42"); }
 };
 
+// WiFi stub: the connection surface net.h/ota.h use, plus the asynchronous
+// scan surface wifi.h drives (scanNetworks(true) → poll scanComplete() →
+// SSID(i)/RSSI(i) → scanDelete()). Tests steer it with setScanResults /
+// finishScan / failScan and read lastBeginSsid to see what the code chose.
 class WiFiStub {
  public:
-  String SSID() { return String("TestNet"); }
-  long RSSI() { return -58; }
+  String SSID() { return connectedSsid; } // current connection (no index)
+  long RSSI() { return connectedRssi; }
+  String SSID(int i) { return (i >= 0 && i < scanCount) ? scanSsid[i] : String(""); }
+  long RSSI(int i) { return (i >= 0 && i < scanCount) ? scanRssi[i] : 0; }
   IPAddressStub localIP() { return IPAddressStub(); }
   int status() { return wifiStatus; }
   void mode(int) {}
-  void begin(const char*, const char*) {}
+  void begin(const char* ssid, const char*) { lastBeginSsid = ssid ? ssid : ""; }
+  void disconnect(bool = false) { wifiStatus = WL_DISCONNECTED; }
+
+  // ── async scan emulation ──
+  void scanNetworks(bool async) {
+    (void)async;
+    scanState = 0; // running
+  }
+  int scanComplete() {
+    if (scanState == 2) return scanCount;        // results ready
+    if (scanState == 3) return WIFI_SCAN_FAILED; // idle / refused
+    return WIFI_SCAN_RUNNING;                    // 0: still scanning
+  }
+  void scanDelete() { scanState = 3; }
+
+  // ── test controls ──
+  void setScanResults(const char* const* ssids, const long* rssi, int n) {
+    scanCount = (n < 8) ? n : 8;
+    for (int i = 0; i < scanCount; i++) {
+      scanSsid[i] = String(ssids[i]);
+      scanRssi[i] = rssi[i];
+    }
+  }
+  void finishScan() { scanState = 2; }
+  void failScan() { scanState = 3; }
+
+  String scanSsid[8];
+  long scanRssi[8] = {0};
+  int scanCount = 0;
+  int scanState = 3; // idle
+  std::string lastBeginSsid;
+  String connectedSsid = String("TestNet");
+  long connectedRssi = -58;
   int wifiStatus = WL_CONNECTED;
 };
 // (the test build defines the global `WiFi` object itself)

@@ -131,7 +131,9 @@ function sendToNode(deviceId, obj) {
 }
 
 // The settings payload every node needs right after auth (and whenever the
-// settings page saves): the GPIO pin, the active level and its status cadence.
+// settings page saves): the GPIO pin, the active level, its status cadence
+// and the lowest log level the node queues (#36 — all of it settings-page
+// editable now).
 function settingsMessage() {
   const s = settingsStore.get();
   return {
@@ -139,6 +141,7 @@ function settingsMessage() {
     gpioPin: s.gpioPin,
     gpioActiveHigh: s.gpioActiveHigh,
     statusIntervalMs: s.statusIntervalMs,
+    minLogLevel: s.minLogLevel,
   };
 }
 
@@ -291,10 +294,21 @@ const nodeServer = net.createServer((socket) => {
 });
 
 // ── Liveness sweep: flip records to offline when a node stopped speaking ──
+// The window is settings-driven since #36 (settings.offlineAfterMs, floor:
+// 3x the status interval). Until the operator saves settings for the first
+// time, config.js/env seeds it (that is also how the e2e suite shortens the
+// window with OFFLINE_AFTER_MS).
+function offlineAfterMs() {
+  if (!settingsStore.existed) return OFFLINE_AFTER_MS;
+  const s = settingsStore.get();
+  return Number.isInteger(s.offlineAfterMs) && s.offlineAfterMs >= 30000 ? s.offlineAfterMs : OFFLINE_AFTER_MS;
+}
+
 setInterval(() => {
   const now = Date.now();
+  const windowMs = offlineAfterMs();
   for (const dev of fleet.values()) {
-    if (dev.online && now - dev.lastSeen >= OFFLINE_AFTER_MS) {
+    if (dev.online && now - dev.lastSeen >= windowMs) {
       dev.online = false;
       dev.lastDisconnectReason = 'silent';
       const sock = connected.get(dev.deviceId);
@@ -318,20 +332,8 @@ setInterval(() => {
 }, PING_INTERVAL_MS);
 
 // ── HTTP API for the PHP frontend ──
-app.use(express.json({ limit: '64kb' }));
-app.use(express.raw({ limit: 2 * 1024 * 1024, type: 'application/octet-stream' }));
-
-// Every /api route requires the shared relay key. Compared as strings with a
-// fixed-length guard first so the secret's length is not leaked by timing.
-function requireRelayKey(req, res, next) {
-  const key = req.get('X-API-Key') || '';
-  if (key.length !== RELAY_KEY.length || key !== RELAY_KEY) {
-    res.status(401).json({ error: 'unauthorized' });
-    return;
-  }
-  next();
-}
-app.use('/api', requireRelayKey);
+// (the middleware and the key check above already cover every /api route;
+// the duplicated block that used to sit here was dead code — #36 tidy-up)
 
 // GET /api/status — everything the dashboard needs in one call.
 app.get('/api/status', (req, res) => {
@@ -341,7 +343,8 @@ app.get('/api/status', (req, res) => {
     desiredGpio,
     gpioPin: s.gpioPin,
     gpioActiveHigh: s.gpioActiveHigh,
-    devices: devices.buildSnapshot(fleet, (id) => settingsStore.nameFor(id), Date.now(), OFFLINE_AFTER_MS),
+    offlineAfterMs: offlineAfterMs(),
+    devices: devices.buildSnapshot(fleet, (id) => settingsStore.nameFor(id), Date.now(), offlineAfterMs()),
   });
 });
 
@@ -382,6 +385,28 @@ app.post('/api/settings', (req, res) => {
   // Re-push the new config to every live node immediately.
   for (const id of connected.keys()) pushConfig(id);
   res.json({ ok: true, settings: result.value, warnings: result.warnings || [] });
+});
+
+// GET /api/config — the settings page's SYSTEM summary (#36): every relay
+// value that used to live only in config.js, shown without ever sending a
+// secret (only "is it set" booleans — the espcamsys2 rule). Ports and keys
+// are startup settings read from config.js/env on the Pi: editing them
+// needs a relay restart, so they are displayed read-only instead of edited.
+app.get('/api/config', (req, res) => {
+  const s = settingsStore.get();
+  res.json({
+    now: Date.now(),
+    httpPort: PORT,
+    nodePort: NODE_PORT,
+    nodeKeySet: NODE_KEY.length > 0 && !NODE_KEY.startsWith('CHANGE-ME'),
+    relayKeySet: RELAY_KEY.length > 0 && !RELAY_KEY.startsWith('CHANGE-ME'),
+    firmware: firmware.currentFirmware(FIRMWARE_DIR),
+    offlineAfterMs: s.offlineAfterMs,
+    statusIntervalMs: s.statusIntervalMs,
+    minLogLevel: s.minLogLevel,
+    editableLive: ['gpioPin', 'gpioActiveHigh', 'statusIntervalMs', 'offlineAfterMs', 'minLogLevel', 'names'],
+    needsRestart: 'ports and keys are read from config.js on the Pi at startup — edit them there and restart the relay',
+  });
 });
 
 // GET /api/logs?device=<id>&lines=<n> — the logs page.

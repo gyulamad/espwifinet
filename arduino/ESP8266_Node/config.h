@@ -11,9 +11,17 @@
 
 #pragma once
 
-// ── WiFi ──
-#define WIFI_SSID   "YOUR-WIFI-NAME"
-#define WIFI_PASS   "YOUR-WIFI-PASSWORD"
+// ── WiFi: the node knows a LIST of networks and (re)connects to the
+// strongest one it can see (task #36, the WiFiMulti pattern from
+// espcamsys2). List every network a node may sit on — different floors,
+// rooms or extenders. Leave the SSID empty ("") for unused slots; at least
+// one network must be set.
+#define WIFI_NETWORK_1_SSID  "YOUR-WIFI-NAME"
+#define WIFI_NETWORK_1_PASS  "YOUR-WIFI-PASSWORD"
+#define WIFI_NETWORK_2_SSID  ""
+#define WIFI_NETWORK_2_PASS  ""
+#define WIFI_NETWORK_3_SSID  ""
+#define WIFI_NETWORK_3_PASS  ""
 
 // ── Relay (the Raspberry Pi) ──
 #define RELAY_HOST  "192.168.1.10"   // relay's IP or hostname
@@ -27,10 +35,12 @@
 #define DEVICE_ID   ""
 
 // Compiled-in defaults; the relay's settings page overrides gpioPin,
-// gpioActiveHigh and the status interval at runtime.
+// gpioActiveHigh, the status interval and the lowest log level the node
+// queues at runtime (see net.h's "settings" message).
 #define DEFAULT_GPIO_PIN     5      // the leg the dashboard toggle drives (safe: D1 on NodeMCU/Wemos)
 #define DEFAULT_ACTIVE_HIGH  true   // ON = HIGH; false for active-LOW relay boards
 #define DEFAULT_STATUS_MS    10000  // status report cadence
+#define DEFAULT_MIN_LOG_LEVEL 0     // 0 = info (queue everything), 1 = warn, 2 = error
 
 // Firmware version for OTA — bump this on every release you upload
 // (ota.h flashes the relay's image when its version differs from this).

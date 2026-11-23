@@ -89,8 +89,10 @@ void sendMessage(WiFiClient& client, const char* json) {
 }
 
 // Callbacks the RelayConnection invokes so the sketch owns the behaviour.
+// onSettings carries the pushed settings; minLogLevel is -1 when the relay
+// did not send one (older relay) and the sketch keeps its compiled value.
 struct NetHooks {
-  void (*onSettings)(long gpioPin, bool activeHigh, long statusMs) = nullptr;
+  void (*onSettings)(long gpioPin, bool activeHigh, long statusMs, long minLogLevel) = nullptr;
   void (*onSetGpio)(const char* state, long pin, bool activeHigh) = nullptr;
 };
 
@@ -223,11 +225,18 @@ class RelayConnection {
     if (strcmp(type, "settings") == 0) {
       long pin = -1;
       long statusMs = -1;
+      long minLevel = -1;
       bool activeHigh = false;
       jsonGetInt(json, "gpioPin", pin);
       jsonGetInt(json, "statusIntervalMs", statusMs);
       jsonGetBool(json, "gpioActiveHigh", activeHigh);
-      if (hooks_.onSettings != nullptr) hooks_.onSettings(pin, activeHigh, statusMs);
+      // minLogLevel (#36): optional string, mapped to the LogLevel values.
+      // Absent (-1) keeps the sketch's compiled-in level.
+      char lvl[12];
+      if (jsonGetString(json, "minLogLevel", lvl, sizeof(lvl))) {
+        minLevel = (strcmp(lvl, "warn") == 0) ? 1 : (strcmp(lvl, "error") == 0 ? 2 : 0);
+      }
+      if (hooks_.onSettings != nullptr) hooks_.onSettings(pin, activeHigh, statusMs, minLevel);
       return true;
     }
     if (strcmp(type, "set_gpio") == 0) {

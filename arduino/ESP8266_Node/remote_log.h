@@ -36,7 +36,14 @@ class RemoteLog {
     lastMsg_[0] = '\0';
     repeats_ = 0;
     lastRepeatMs_ = 0;
+    minLevel_ = LOG_INFO;
   }
+
+  // Lowest level that gets QUEUED for the relay (#36, pushed by the relay's
+  // settings message). Serial always sees everything — the filter only
+  // saves radio buffer space, the local debug view stays complete.
+  void setMinLevel(LogLevel level) { minLevel_ = level; }
+  LogLevel minLevel() const { return minLevel_; }
 
   // Logs one printf-style line. Repeats of the same message inside 5 s are
   // summarised instead of queued (a flapping WiFi link otherwise floods the
@@ -47,6 +54,15 @@ class RemoteLog {
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+
+    // below the queue threshold: echo to serial only, do not touch the
+    // repeat bookkeeping (a filtered line must not swallow a later summary)
+    if (level < minLevel_) {
+      if (serial_ != nullptr) {
+        serial_->printf("[%08lu][%s] %s\r\n", millis(), levelName(level), buf);
+      }
+      return;
+    }
 
     const uint32_t now = millis();
     if (strcmp(buf, lastMsg_) == 0 && now - lastRepeatMs_ < 5000) {
@@ -115,6 +131,7 @@ class RemoteLog {
   char lastMsg_[LOG_MSG_MAX];
   uint32_t lastRepeatMs_ = 0;
   uint32_t repeats_ = 0;
+  LogLevel minLevel_ = LOG_INFO;
 };
 
 } // namespace espnet

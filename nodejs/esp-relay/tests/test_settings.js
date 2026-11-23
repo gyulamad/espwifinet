@@ -3,7 +3,7 @@
 // test_settings.js — validation rules for the settings page.
 
 const assert = require('assert');
-const { validateSettings, loadSettings, DEFAULT_SETTINGS } = require('../lib/settings');
+const { validateSettings, loadSettings, SettingsStore, DEFAULT_SETTINGS } = require('../lib/settings');
 const { loadGpioState, saveGpioState, isGpioStateValid } = require('../lib/gpiostate');
 
 const readJson = (file, fallback) => fallback;
@@ -41,6 +41,33 @@ function run() {
   assert.strictEqual(validateSettings({ statusIntervalMs: 600000 }).ok, true);
   assert.strictEqual(validateSettings({ statusIntervalMs: 1000 }).ok, false);
   assert.strictEqual(validateSettings({ statusIntervalMs: 600001 }).ok, false);
+
+  // offlineAfterMs (#36): bounds and the 3x-statusInterval rule
+  assert.strictEqual(validateSettings({ offlineAfterMs: 45000 }).ok, true);
+  assert.strictEqual(validateSettings({ offlineAfterMs: 30000 }).ok, true); // exactly 3x the default interval
+  assert.strictEqual(validateSettings({ offlineAfterMs: '45000' }).ok, true); // numeric strings convert
+  assert.strictEqual(validateSettings({ offlineAfterMs: 29999 }).ok, false);
+  assert.strictEqual(validateSettings({ offlineAfterMs: 3600001 }).ok, false);
+  assert.strictEqual(validateSettings({ offlineAfterMs: 4.5 }).ok, false);
+  const w3x = validateSettings({ statusIntervalMs: 60000, offlineAfterMs: 60000 });
+  assert.strictEqual(w3x.ok, false);
+  assert.ok(w3x.errors[0].includes('3x statusIntervalMs'));
+
+  // minLogLevel (#36): the three queue levels, nothing else
+  assert.strictEqual(validateSettings({ minLogLevel: 'info' }).ok, true);
+  assert.strictEqual(validateSettings({ minLogLevel: 'warn' }).ok, true);
+  assert.strictEqual(validateSettings({ minLogLevel: 'error' }).ok, true);
+  assert.strictEqual(validateSettings({ minLogLevel: 'DEBUG' }).ok, false);
+  assert.strictEqual(validateSettings({ minLogLevel: 1 }).ok, false);
+  assert.strictEqual(validateSettings({ minLogLevel: null }).ok, false);
+
+  // SettingsStore.existed: config values stay in charge until the first save
+  const savedStore = new SettingsStore('/unused', () => ({ gpioPin: 6, offlineAfterMs: 90000, minLogLevel: 'error' }));
+  assert.strictEqual(savedStore.existed, true);
+  assert.strictEqual(savedStore.get().offlineAfterMs, 90000);
+  const freshStore = new SettingsStore('/unused', () => null);
+  assert.strictEqual(freshStore.existed, false);
+  assert.strictEqual(freshStore.get().minLogLevel, 'info');
 
   // names: bad ids / bad names refused, unknown keys dropped
   const n1 = validateSettings({ names: { 'bad id!': 'x' } });

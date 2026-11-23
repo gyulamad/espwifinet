@@ -17,5 +17,8 @@ module.exports = {
   nodeKey: 'CHANGE-ME-node-key',
   // Show a node offline after this long without any message. Must be at
   // least 3x the sketch's STATUS_INTERVAL_MS (settings.statusIntervalMs).
+  // Since #36 the dashboard's settings page owns this value (with the 3x
+  // rule enforced on save); this entry only seeds the default until the
+  // first settings save.
   offlineAfterMs: 45000,
 };
