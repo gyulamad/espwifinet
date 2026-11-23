@@ -44,4 +44,5 @@ Design decisions worth knowing (each documented in the code):
   dashboard, length caps on every wire buffer, HTML escaping via one
   helper, no shell exec anywhere.
 
-See **INSTALL.md** for setup (Pi, PHP, flashing, OTA, troubleshooting).
+See **INSTALL.md** for setup (Pi, PHP, flashing, OTA, troubleshooting) and
+**acronym.md** (#50) for every acronym the docs use.
