@@ -268,6 +268,32 @@ async function main() {
     node.close();
   });
 
+  await step('settings push carries the log level; /api/config summarizes the system', async () => {
+    const node = new FakeNode(nodePort, 'node-loglevel');
+    await node.connected;
+    node.auth();
+    await node.waitFor((m) => m.type === 'settings');
+
+    const { json: saved } = await api(httpPort, 'POST', '/api/settings', { minLogLevel: 'warn' });
+    assert.strictEqual(saved.ok, true);
+    assert.strictEqual(saved.settings.minLogLevel, 'warn');
+
+    // the node hears the new floor with the settings message (#36)
+    const pushed = await node.waitFor((m) => m.type === 'settings' && m.minLogLevel === 'warn', 4000, 'min log level');
+    assert.strictEqual(pushed.minLogLevel, 'warn');
+
+    // system summary without secrets: only isSet booleans, plus what is
+    // editable live vs what needs a relay restart
+    const { json: cfg } = await api(httpPort, 'GET', '/api/config');
+    assert.strictEqual(typeof cfg.nodePort, 'number');
+    assert.strictEqual(typeof cfg.httpPort, 'number');
+    assert.strictEqual(cfg.nodeKeySet, true);
+    assert.strictEqual(cfg.relayKeySet, true);
+    assert.ok(cfg.editableLive.includes('offlineAfterMs'));
+    assert.ok(cfg.needsRestart.includes('config.js'));
+    node.close();
+  });
+
   await step('logs from the node reach the per-device log file and the logs api', async () => {
     const node = new FakeNode(nodePort, 'node-5');
     await node.connected;
@@ -304,12 +330,25 @@ async function main() {
     assert.strictEqual(buf[0], 0xe9);
   });
 
-  await step('silent node is marked offline after the offline window', async () => {
+  await step('the settings-driven offline window marks a silent node offline', async () => {
+    // #36: the window the sweep uses comes from the settings page once a
+    // save happened — shorten it here through the API and watch it apply.
+    const tooShort = await api(httpPort, 'POST', '/api/settings', { offlineAfterMs: 1500 });
+    assert.strictEqual(tooShort.status, 400); // below the 30000 floor
+    assert.ok(tooShort.json.errors.some((e) => e.includes('30000')));
+    const below3x = await api(httpPort, 'POST', '/api/settings', { statusIntervalMs: 60000, offlineAfterMs: 60000 });
+    assert.strictEqual(below3x.status, 400); // in bounds, but less than 3x the interval
+    assert.ok(below3x.json.errors.some((e) => e.includes('3x statusIntervalMs')));
+
+    const { json: win } = await api(httpPort, 'POST', '/api/settings', { statusIntervalMs: 10000, offlineAfterMs: 30000 });
+    assert.strictEqual(win.ok, true);
+    assert.strictEqual(win.settings.offlineAfterMs, 30000);
+
     const node = new FakeNode(nodePort, 'node-silent');
     await node.connected;
     node.auth();
     await node.waitFor((m) => m.type === 'settings');
-    await sleep(4000); // OFFLINE_AFTER_MS=1500 + sweep interval
+    await sleep(34000); // 30000 window + sweep interval + margin
     const { json } = await api(httpPort, 'GET', '/api/status');
     const dev = json.devices.find((x) => x.deviceId === 'node-silent');
     assert.strictEqual(dev.online, false);
