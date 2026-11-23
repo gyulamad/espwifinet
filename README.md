@@ -1,5 +1,7 @@
 # ESP Wifi Network (base project)
 
+[![CI](https://github.com/gyulamad/espwifinet/actions/workflows/ci.yml/badge.svg)](https://github.com/gyulamad/espwifinet/actions/workflows/ci.yml)
+
 Base architecture for switching a GPIO leg on a fleet of ESP8266 nodes from
 one dashboard toggle — the starting point for later home-automation
 development (project #3 · Home automation, task #33).
