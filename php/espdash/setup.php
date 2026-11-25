@@ -95,6 +95,21 @@ function dash_probe_relay(string $url, string $key): array
     return [true, 'relay reachable, key accepted (' . count($decoded['devices']) . ' device record(s) known).'];
 }
 
+// A readable name for a numeric owner uid ("www-data (uid 33)"), so the
+// write-failure message can say WHO owns the folder instead of leaving the
+// operator guessing. Falls back to the raw uid when the posix extension is
+// not loaded. (#144)
+function dash_uid_label(int $uid): string
+{
+    if (function_exists('posix_getpwuid')) {
+        $info = @posix_getpwuid($uid);
+        if (is_array($info) && isset($info['name'])) {
+            return $info['name'] . ' (uid ' . $uid . ')';
+        }
+    }
+    return 'uid ' . $uid;
+}
+
 // Atomic config write: temp file in the same folder, fsync-ed, renamed. No
 // .bak copy is ever left in the web folder.
 function dash_write_config(string $dir, array $config): array
@@ -104,7 +119,17 @@ function dash_write_config(string $dir, array $config): array
     $php = "<?php\n// Written by setup.php — edit values by hand afterwards if needed.\n\nreturn " . var_export($config, true) . ";\n";
     $fh = @fopen($tmp, 'x');
     if ($fh === false) {
-        return [false, 'could not create a temporary file in ' . $dir . ' — check the web server\'s write permission.'];
+        clearstatcache();
+        $dirUid = @fileowner($dir);
+        $who = '';
+        if ($dirUid !== false && function_exists('posix_geteuid')) {
+            $who = ' (folder owned by ' . dash_uid_label($dirUid)
+                 . ', this page runs as ' . dash_uid_label(posix_geteuid()) . ')';
+        }
+        return [false, 'could not create a temporary file in ' . $dir
+            . ' — the web server user cannot write there' . $who
+            . '. Fix: sudo chown www-data:www-data ' . $dir
+            . ' (www-data is the Debian/Raspberry Pi OS default; ps aux | grep php-fpm shows yours), then reload this page.'];
     }
     fwrite($fh, $php);
     fflush($fh);
@@ -209,6 +234,16 @@ Layout::header('Initial setup', 'setup');
 echo '<section class="card narrow">' . "\n";
 echo '<h1>Initial setup</h1>' . "\n";
 echo '<p class="muted">First run: this page creates config.php (relay address, relay key, first dashboard login) so no config file has to be edited by hand.</p>' . "\n";
+// #144: the config write lands IN this folder, so warn BEFORE the operator
+// fills the form when the web server user cannot write there.
+clearstatcache();
+if (!is_writable(__DIR__)) {
+    $dirUid = @fileowner(__DIR__);
+    $who = ($dirUid !== false) ? ' (the folder is owned by ' . dash_uid_label($dirUid) . ')' : '';
+    echo '<p class="msg err">The web server cannot write to this folder' . e($who)
+        . ' — saving below will fail with a temporary-file error. Fix it first: <code>sudo chown www-data:www-data '
+        . e(__DIR__) . '</code> (www-data is the Debian/Raspberry Pi OS default), then reload this page.</p>' . "\n";
+}
 if ($state === 'template') {
     echo '<p class="msg err">The existing config.php is not usable yet:</p><ul>';
     foreach ($stateReasons as $reason) {

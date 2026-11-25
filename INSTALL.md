@@ -104,6 +104,11 @@ Requires PHP ≥ 8 with the `curl` extension (`php -m | grep curl`).
 
 ```bash
 sudo cp -r php/espdash /var/www/html/espdash
+# the setup page writes config.php INTO this folder (temp file + rename),
+# so the WEB SERVER user needs write access to the folder itself - a
+# root-owned folder makes setup.php fail with "could not create a
+# temporary file" (#144):
+sudo chown www-data:www-data /var/www/html/espdash
 ```
 
 Then open `http://<pi-ip>/espdash/setup.php` — the **initial setup page**
@@ -290,6 +295,7 @@ Details worth knowing:
 | Toggle shows "delivered to 0" | no node online right now — offline nodes catch up the moment they reconnect (desired state is persisted). |
 | OTA never updates | Firmware page shows what the relay serves; node logs show each check. A refused upload means the file is not an ESP image (missing 0xE9 header). |
 | Dashboard shows "relay unreachable" | the relay service is not running or `relay_url`/`relay_key` in `config.php` do not match the relay's `config.js`. |
+| `setup.php` says "could not create a temporary file" | the web server cannot write the `espdash` folder — `sudo chown www-data:www-data /var/www/html/espdash` (`www-data` is the Debian/Raspberry Pi OS default; `ps aux | grep php-fpm` shows yours), then reload the page. The page detects this itself now (#144) and shows the same fix before you fill the form. |
 | The `espnode-setup-…` WiFi does not appear | the node is provisioned (it has completed a first successful WiFi connect, flag stored in flash) and is retrying — a provisioned node never auto-opens the setup WiFi (v2). To re-enter setup deliberately: Settings page → "WiFi setup re-entry" ON, power-cycle the node, save its WiFi, switch OFF. The serial monitor shows the boot decision. |
 | Node joined nothing after a save | wrong password or hidden network — arm SETUP_MODE on the dashboard, power-cycle the node, rejoin its setup WiFi and fix the row (a blank password field keeps the stored one); the save disarms the node again. To start over completely, erase the flash (section 4, "Details worth knowing"). |
 

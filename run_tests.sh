@@ -52,6 +52,23 @@ else
   echo "── C++ logic tests skipped (no g++) ──"
 fi
 
+# #144: the dashboard's PHP side now has its own coverage - a syntax lint of
+# every php file plus a real e2e of setup.php's first-run write (the
+# read-only-folder failure and the success path), driven through php -S.
+# Skipped gracefully on machines without php/curl.
+echo ""
+echo "── php dashboard: lint + setup e2e (#144) ──"
+if command -v php >/dev/null 2>&1; then
+  find php -name '*.php' -exec php -l {} \; | grep -v "No syntax errors" && fail=1
+  if command -v curl >/dev/null 2>&1; then
+    bash tests/php/test_setup_e2e.sh || fail=1
+  else
+    echo "setup e2e skipped (no curl)"
+  fi
+else
+  echo "php checks skipped (no php)"
+fi
+
 echo ""
 if [ "$fail" -eq 0 ]; then
   echo "ALL TESTS PASSED"
