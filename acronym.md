@@ -20,13 +20,13 @@ the docs use them the same way and a reader may wonder.
 | ESP | Espressif (chip maker) — name | the family of ESP boards this project runs on; "ESP Wifi Network" is this project's name |
 | ESP-12E | Espressif module variant — name | the module on the "NodeMCU 1.0 (ESP-12E module)" board named in the flashing instructions |
 | ESP8266 | Espressif Wi-Fi microcontroller — name | kept in these docs only where an identifier literally carries it: the board core's Boards Manager entry, the compile FQBN, the chip name the node reports on the wire |
-| FW | firmware | `FW_VERSION` in the sketch's `config.h`, bumped before compiling a new OTA release |
+| FW | firmware | `FW_VERSION`, the sketch's inline build-time default (there is no `config.h` since #140), bumped before compiling a new OTA release |
 | GPIO | General-Purpose Input/Output | the pin the dashboard toggle drives on every node; default GPIO 5 (D1 on NodeMCU/Wemos boards) |
 | HTML | HyperText Markup Language | the dashboard markup, escaped through one helper |
 | HTTP | HyperText Transfer Protocol | the relay's API transport (GET requests), OTA firmware serving and dashboard↔relay calls |
 | IDE | Integrated Development Environment | the Arduino IDE used to flash the node |
 | IO | Input/Output | kept in thin wrappers so every module's decision logic stays pure and testable |
-| IP | Internet Protocol (address) | the Pi's address, set as `RELAY_HOST` in the sketch and in the dashboard's relay URL |
+| IP | Internet Protocol (address) | the Pi's address, entered on the node's setup page (Relay section, stored in flash) and in the dashboard's relay URL |
 | JSON | JavaScript Object Notation | the framed node↔relay protocol, the JSON-lines log files and the `settings.json`/`state.json` data files |
 | LAN | Local Area Network | the home network the dashboard is meant to be used on |
 | LED | Light-Emitting Diode | troubleshooting sign: a node shown offline but with LEDs on is connected yet silent |

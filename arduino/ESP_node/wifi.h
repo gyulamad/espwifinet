@@ -3,7 +3,8 @@
 // instead of one compiled-in SSID the node knows a LIST of networks and
 // always (re)connects to the strongest one it can see. That is what makes
 // moving a node between floors, rooms or extenders a matter of listing the
-// networks once in config.h — no reflashing per location.
+// network once on the node's setup page (it lands in the flash store, task
+// #140) — no reflashing per location.
 //
 // The policy, deliberately conservative so a healthy link is never churned:
 //   - every (re)connect scans and picks the strongest KNOWN network,
@@ -53,7 +54,8 @@
 
 namespace espnet {
 
-// One known WiFi network (config.h). An empty ssid marks the slot unused.
+// One known WiFi network (a row of the flash store, task #140). An empty
+// ssid marks the slot unused.
 struct WifiNetwork {
   const char* ssid;
   const char* pass;

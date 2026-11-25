@@ -285,7 +285,7 @@ Details worth knowing:
 
 | Symptom | Where to look |
 | --- | --- |
-| Node never appears | relay log (`Logs → relay`): "rejected connection" = wrong `NODE_KEY` in the sketch; "replacing stale/conflict" = two boards share one `DEVICE_ID`. |
+| Node never appears | relay log (`Logs → relay`): "rejected connection" = the node's stored fleet key (typed on its setup page) does not match the relay's `nodeKey` in `config.js`; "replacing stale/conflict" = two boards share one `DEVICE_ID`. |
 | Node shown offline but LEDs on | it is connected but silent — check WiFi strength on the Devices page; the relay closes half-open links automatically. |
 | Toggle shows "delivered to 0" | no node online right now — offline nodes catch up the moment they reconnect (desired state is persisted). |
 | OTA never updates | Firmware page shows what the relay serves; node logs show each check. A refused upload means the file is not an ESP image (missing 0xE9 header). |

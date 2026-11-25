@@ -48,8 +48,9 @@
 #include "wifi_store.h"
 
 #ifndef ESPNET_SETUP_AP_PASSWORD
-// The setup WiFi's WPA2 password until the operator overrides it in
-// config.h. It is in the repository, so it is public knowledge — the setup
+// The setup WiFi's WPA2 password, overridable at build time with
+// -DESPNET_SETUP_AP_PASSWORD (there is no config.h to edit — task #140). It
+// is in the repository, so it is public knowledge — the setup
 // WiFi only exists while the node cannot join anything anyway, and the page
 // behind it writes credentials, so the WPA2 gate is there to keep drive-by
 // neighbours out, not to be a secret.

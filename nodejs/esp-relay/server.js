@@ -454,7 +454,8 @@ app.post('/api/firmware', (req, res) => {
   res.json({ ok: true, chip, ...result });
 });
 
-// Node-facing OTA endpoints (the node knows RELAY_HOST:PORT already):
+// Node-facing OTA endpoints (the node already knows the relay's
+// address:port from its flash store's relay configuration, task #140):
 //   GET /firmware/version?chip=<chip> -> "<version>\n<md5>\n"
 //   GET /firmware/node.bin            (the esp8266 image)
 //   GET /firmware/node-esp32.bin      (the esp32 image)

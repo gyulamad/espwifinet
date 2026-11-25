@@ -2,8 +2,9 @@
 // project, #36 setup & settings, #135 first install). Role of this sketch:
 //   - join WiFi through the multi-network manager (wifi.h): always
 //     (re)connects to the STRONGEST of the known networks — the list comes
-//     from the node's flash store (wifi_store.h, written by the setup page)
-//     or, when that is empty, from config.h,
+//     from the node's flash store (wifi_store.h, written by the setup page);
+//     an empty store means a factory node that opens its setup WiFi (there
+//     is no compiled fallback — task #140),
 //   - a FACTORY-NEW node (no credentials anywhere) opens its own setup WiFi
 //     (setup_logic.h / setup_ap.h): join "espnode-setup-xxxxxx" from a
 //     phone, pick the network(s) and password(s) on the page, save — the
