@@ -2,7 +2,7 @@
 
 // test_relay_e2e.js — starts the real server.js on scratch ports/dirs and
 // drives it like the production actors do: a simulated ESP8266 node over raw
-// TCP (same wire protocol as arduino/ESP8266_Node) and the PHP frontend's
+// TCP (same wire protocol as arduino/ESP_node) and the PHP frontend's
 // HTTP calls with the shared relay key.
 //
 // Run: node tests/e2e/test_relay_e2e.js  (needs `npm install` for express)

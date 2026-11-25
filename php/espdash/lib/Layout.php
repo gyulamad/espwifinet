@@ -47,7 +47,7 @@ class Layout
     public static function footer()
     {
         echo '</main>' . "\n";
-        echo '<footer class="wrap foot">ESP Wifi Network · relay + ESP8266 nodes</footer>' . "\n";
+        echo '<footer class="wrap foot">ESP Wifi Network · relay + ESP nodes</footer>' . "\n";
         echo '</body>' . "\n";
         echo '</html>' . "\n";
     }

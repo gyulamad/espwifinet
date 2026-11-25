@@ -13,7 +13,7 @@ module.exports = {
   // Generate one: node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
   relayKey: 'CHANGE-ME-relay-key',
   // Shared secret each node must send in its auth line. Compile the same
-  // value into the sketch (arduino/ESP8266_Node/config.h).
+  // value into the sketch (arduino/ESP_node/config.h).
   nodeKey: 'CHANGE-ME-node-key',
   // Show a node offline after this long without any message. Must be at
   // least 3x the sketch's STATUS_INTERVAL_MS (settings.statusIntervalMs).

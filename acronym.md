@@ -14,9 +14,9 @@ the docs use them the same way and a reader may wonder.
 | CSP | Content Security Policy | the security header set on the dashboard pages |
 | dBm | decibel-milliwatt (signal power unit) | WiFi signal strength on the Devices page; the node roams below -75 dBm and only when another network beats the current one by 8 dB |
 | e2e | end-to-end | the Node test level in `run_tests.sh` that starts the real relay and drives it with a simulated node over raw TCP |
-| ESP | Espressif (chip maker) — name | the ESP8266 family; "ESP Wifi Network" is this project's name |
+| ESP | Espressif (chip maker) — name | the ESP8266/ESP32 board family; "ESP Wifi Network" is this project's name |
 | ESP-12E | Espressif module variant — name | the module on the "NodeMCU 1.0 (ESP-12E module)" board named in the flashing instructions |
-| ESP8266 | Espressif Wi-Fi microcontroller — name | the node hardware the Arduino sketch targets |
+| ESP8266 | Espressif Wi-Fi microcontroller — name | one of the two boards the sketch targets (with the ESP32/WROOM32) |
 | FW | firmware | `FW_VERSION` in the sketch's `config.h`, bumped before compiling a new OTA release |
 | GPIO | General-Purpose Input/Output | the pin the dashboard toggle drives on every node; default GPIO 5 (D1 on NodeMCU/Wemos boards) |
 | HTML | HyperText Markup Language | the dashboard markup, escaped through one helper |

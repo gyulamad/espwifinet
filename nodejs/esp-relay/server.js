@@ -3,7 +3,7 @@
 // server.js — the ESP Wifi Network relay, run on the Raspberry Pi.
 //
 // Two listeners, one process:
-//   - a raw TCP server (config.nodePort): every ESP8266 node opens ONE
+//   - a raw TCP server (config.nodePort): every ESP node opens ONE
 //     outbound connection here, authenticates with "<deviceId>\t<apiKey>\n"
 //     and then exchanges [4-byte BE length][JSON] messages. Outbound-only is
 //     what lets nodes sit behind WiFi extenders and NAT routers: the node

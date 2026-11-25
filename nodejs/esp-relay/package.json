@@ -1,7 +1,7 @@
 {
   "name": "esp-relay",
   "version": "1.0.0",
-  "description": "ESP Wifi Network relay: raw TCP hub for ESP8266 nodes + HTTP API for the PHP frontend (Raspberry Pi)",
+  "description": "ESP Wifi Network relay: raw TCP hub for ESP nodes + HTTP API for the PHP frontend (Raspberry Pi)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

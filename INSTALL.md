@@ -1,6 +1,6 @@
 # ESP Wifi Network — base project
 
-A small, extensible base for switching GPIOs on ESP8266 boards from a
+A small, extensible base for switching GPIOs on ESP boards from a
 dashboard, following the architecture of `gyulamad/espcamsys2`:
 
 ```
@@ -11,12 +11,12 @@ dashboard, following the architecture of `gyulamad/espcamsys2`:
                 ▲                        ▲                │
    outbound TCP │                        │ HTTP GET       │ upload via dashboard
    (auth line + │                        │ /firmware/*    ▼
-   framed JSON) │                 ESP8266 nodes ◄── OTA self-update
-                └──── ESP8266 nodes ─────┘
+   framed JSON) │                 ESP nodes     ◄── OTA self-update
+                └────── ESP nodes ────────┘
         (behind WiFi extenders / NAT routers: no inbound port needed)
 ```
 
-Each ESP8266 node keeps **one outbound TCP connection** to the relay. That is
+Each ESP node keeps **one outbound TCP connection** to the relay. That is
 the key architectural decision (taken from espcamsys2's push connection):
 the node dials the relay, so nodes work unchanged behind WiFi extenders and
 NAT routers, and the same established connection carries the relay's
@@ -28,7 +28,7 @@ Directory layout:
 | --- | --- |
 | `nodejs/esp-relay/` | the relay: raw TCP hub for nodes + HTTP API for the dashboard |
 | `php/espdash/` | the PHP frontend: login, dashboard (one toggle), devices, logs, settings, firmware |
-| `arduino/ESP8266_Node/` | the node sketch: connection, status reporting, remote logging, OTA, GPIO |
+| `arduino/ESP_node/` | the node sketch: connection, status reporting, remote logging, OTA, GPIO |
 | `tests/` | unit + e2e (Node) and logic (C++) tests; `./run_tests.sh` runs everything |
 
 ---
@@ -217,7 +217,7 @@ settings page warns about them.
 | Node never appears | relay log (`Logs → relay`): "rejected connection" = wrong `NODE_KEY` in the sketch; "replacing stale/conflict" = two boards share one `DEVICE_ID`. |
 | Node shown offline but LEDs on | it is connected but silent — check WiFi strength on the Devices page; the relay closes half-open links automatically. |
 | Toggle shows "delivered to 0" | no node online right now — offline nodes catch up the moment they reconnect (desired state is persisted). |
-| OTA never updates | Firmware page shows what the relay serves; node logs show each check. A refused upload means the file is not an ESP8266 image (missing 0xE9 header). |
+| OTA never updates | Firmware page shows what the relay serves; node logs show each check. A refused upload means the file is not an ESP image (missing 0xE9 header). |
 | Dashboard shows "relay unreachable" | the relay service is not running or `relay_url`/`relay_key` in `config.php` do not match the relay's `config.js`. |
 
 ## 7. Running the tests
