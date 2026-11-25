@@ -484,6 +484,22 @@ static void testWifiStore() {
   bad[0].ssid = "Home";
   bad[0].pass = "short";
   assert(!store.save(bad, 1));
+
+  // #138: the store holds 30 networks (the flash sector's cap) - a full
+  // round-trip at capacity, byte-for-byte back
+  WifiStoreNet many[espnet::WIFI_STORE_MAX_NETS];
+  for (int i = 0; i < espnet::WIFI_STORE_MAX_NETS; ++i) {
+    char n[8];
+    snprintf(n, sizeof(n), "net%d", i + 1);
+    many[i].ssid = n;
+    many[i].pass = std::string("pw-") + n + "-0123456789012345678901234567890123456789" + n; // 52 chars, inside the WPA2 bound
+  }
+  assert(store.save(many, espnet::WIFI_STORE_MAX_NETS));
+  WifiStoreNet backMany[espnet::WIFI_STORE_MAX_NETS];
+  assert(store.load(backMany, espnet::WIFI_STORE_MAX_NETS) == espnet::WIFI_STORE_MAX_NETS);
+  for (int i = 0; i < espnet::WIFI_STORE_MAX_NETS; ++i) {
+    assert(backMany[i].ssid == many[i].ssid && backMany[i].pass == many[i].pass);
+  }
 }
 
 // ── task #135 v2: the life-cycle flags and the v1 migration ──
@@ -623,13 +639,34 @@ static void testSetupForm() {
   assert(page.status == 200);
   assert(page.body.find("name=\"csrf\" value=\"" + std::string(kToken) + "\"") != std::string::npos);
   assert(page.body.find("network name 1") != std::string::npos);
-  assert(page.body.find("<script") == std::string::npos);
+  // #138: one row by default; the page references the same-origin script
+  // (no inline script, no handler attributes) and offers the Add/Remove UI
+  assert(page.body.find("<script src=\"/setup.js\"></script>") != std::string::npos);
+  assert(page.body.find("id=\"addrow\"") != std::string::npos);
+  assert(page.body.find("class=\"rm\"") != std::string::npos);
+  assert(page.body.find("<noscript>") != std::string::npos); // the no-JS fallback rows
+  assert(page.body.find("onclick=") == std::string::npos);
+  assert(page.body.find("<script>") == std::string::npos);   // nothing inline
   bool hasCsp = false;
   for (size_t i = 0; i < page.headers.size(); ++i) {
     if (page.headers[i].first == "Content-Security-Policy") hasCsp = true;
     if (page.headers[i].first == "Location") assert(false); // no redirect on the form
   }
   assert(hasCsp);
+
+  // the form's Add/Remove helper is served by the same handler (#138)
+  espnet::HttpReply js = form.handle("GET", "/setup.js", "");
+  assert(js.status == 200);
+  assert(js.contentType == "text/javascript; charset=utf-8");
+  assert(js.body.find("renumber") != std::string::npos);
+  assert(js.body.find("'w.ssid.' + n") != std::string::npos);
+  assert(js.body.find("rows.length >= 30") != std::string::npos);
+  bool jsHeaders = false;
+  for (size_t i = 0; i < js.headers.size(); ++i) {
+    if (js.headers[i].first == "Cache-Control" && js.headers[i].second == "no-store") jsHeaders = true;
+  }
+  assert(jsHeaders);
+  assert(form.handle("POST", "/setup.js", "").status == 405);
 
   // every POST is guarded by the per-session token (constant-time compare)
   espnet::HttpReply r = form.handle("POST", "/save", "w.ssid.1=Home&w.pass.1=abcdefgh");
@@ -758,6 +795,35 @@ static void testSetupForm() {
   assert(!armedStore.setupArmed());
   assert(armedStore.load(stored, espnet::WIFI_STORE_MAX_NETS) == 1);
   assert(stored[0].ssid == "New" && stored[0].pass == "newpass1");
+
+  // #138: a filled row BEYOND the 30-row capacity is an explicit error, not
+  // a silent drop - and 30 full rows still save cleanly
+  RamStoreBackend capBackend;
+  espnet::WifiStore capStore;
+  capStore.begin(&capBackend);
+  espnet::WifiStoreNet none[1];
+  espnet::SetupForm capForm("espnode-setup-aabbcc", capStore, none, 0, kToken);
+  std::string body30;
+  for (int i = 1; i <= espnet::WIFI_STORE_MAX_NETS; ++i) {
+    body30 += "w.ssid." + std::to_string(static_cast<long long>(i)) + "=net" +
+              std::to_string(static_cast<long long>(i)) + "&w.pass." +
+              std::to_string(static_cast<long long>(i)) + "=abcdefgh" + (i < espnet::WIFI_STORE_MAX_NETS ? "&" : "");
+  }
+  espnet::HttpReply capOk = capForm.handle("POST", "/save", "csrf=" + std::string(kToken) + "&" + body30);
+  assert(capOk.status == 200);
+  assert(capStore.load(stored, espnet::WIFI_STORE_MAX_NETS) == espnet::WIFI_STORE_MAX_NETS);
+
+  // a fresh form for the refusal (the one above is in its restarting state)
+  RamStoreBackend capBackend2;
+  espnet::WifiStore capStore2;
+  capStore2.begin(&capBackend2);
+  espnet::SetupForm capForm2("espnode-setup-aabbcc", capStore2, none, 0, kToken);
+  std::string body31 = "csrf=" + std::string(kToken) + "&" + body30 +
+                       "&w.ssid.31=extra&w.pass.31=abcdefgh";
+  espnet::HttpReply capRefused = capForm2.handle("POST", "/save", body31);
+  assert(capRefused.status == 422); // the refused save re-renders the form with the errors
+  assert(capRefused.body.find("up to 30 WiFi networks") != std::string::npos);
+  assert(capStore2.load(stored, espnet::WIFI_STORE_MAX_NETS) == 0); // nothing was stored
 }
 
 // ── task #135: the setup session (SetupSession) ──

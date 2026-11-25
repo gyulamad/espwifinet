@@ -151,10 +151,13 @@ inline bool isFieldNameChar(char c) {
 // and an ambiguity is how requests get smuggled), and anything urlDecode
 // refuses. Empty pieces ("a=1&&b=2", a trailing '&') are skipped.
 static const size_t WIFI_SETUP_MAX_BODY = 4096;
-static const size_t WIFI_SETUP_MAX_FIELDS = 32;
+// #138: 30 rows x 3 fields + the csrf token = 91; the cap stays tight (a
+// handful over what the biggest legitimate form can send) but is no longer
+// 32, which would refuse a full 30-row save.
+static const size_t WIFI_SETUP_MAX_FIELDS = 96;
 static const size_t WIFI_SETUP_MAX_FIELD_NAME = 40;
 static const size_t WIFI_SETUP_MIN_TOKEN = 16;  // shorter = "no token": every POST refused
-static const size_t WIFI_SETUP_MIN_ROWS = 3;    // blank rows offered on an empty store
+static const size_t WIFI_SETUP_MIN_ROWS = 1;    // one row by default; "Add another network" adds more (#138)
 
 inline bool parseUrlEncoded(const std::string& body, std::vector<FormField>& out, std::string& err) {
   out.clear();
@@ -247,7 +250,7 @@ inline const char* setupPageStyle() {
          "input[type=text],input[type=password]{width:100%;box-sizing:border-box;font-size:1rem;padding:.45rem;margin:.15rem 0}"
          ".net{margin-bottom:.5rem}.net label{display:inline;font-size:.85rem}"
          ".err{background:#fef2f2;border-color:#b91c1c}.note{font-size:.85rem;color:#374151}"
-         "button{font-size:1rem;padding:.6rem 1rem;margin:.3rem 0;border-radius:.4rem;border:1px solid #1f2937;background:#1f2937;color:#fff;width:100%}";
+         "button{font-size:1rem;padding:.6rem 1rem;margin:.3rem 0;border-radius:.4rem;border:1px solid #1f2937;background:#1f2937;color:#fff;width:100%}button.rm,#addrow{width:auto;padding:.3rem .8rem;margin:.2rem 0}";
 }
 
 inline void addSecurityHeaders(HttpReply& r, bool html) {
@@ -255,12 +258,75 @@ inline void addSecurityHeaders(HttpReply& r, bool html) {
   r.headers.push_back(std::make_pair("X-Content-Type-Options", "nosniff"));
   r.headers.push_back(std::make_pair("Referrer-Policy", "no-referrer"));
   if (html) {
-    // No script at all; the one inline stylesheet is the only thing allowed
-    // to run in the page.
+    // No inline script and no third-party anything; the one inline
+    // stylesheet plus the one same-origin script (/setup.js, the form's
+    // Add/Remove rows helper) are all that is allowed to run.
     r.headers.push_back(std::make_pair("Content-Security-Policy",
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"));
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"));
     r.headers.push_back(std::make_pair("X-Frame-Options", "DENY"));
   }
+}
+
+// The form's Add/Remove rows helper (#138), served as /setup.js from the
+// node itself (same origin, the CSP's script-src 'self'). Vanilla JS, no
+// dependencies, no network calls: it clones the first row for "Add", a
+// Remove button drops its own row, and afterwards every row is RENUMBERED
+// so the POST stays sequential (w.ssid.1..N) - the server-side parser also
+// tolerates gaps, but sequential keeps the error messages readable. The
+// hard cap mirrors WIFI_STORE_MAX_NETS: the node's flash sector is the
+// physical limit.
+inline const char* setupFormJavaScript() {
+  return R"js((function(){
+  var fieldset = document.querySelector('fieldset');
+  var addWrap = document.getElementById('addwrap');
+  var addBtn = document.getElementById('addrow');
+  function renumber() {
+    var rows = fieldset.querySelectorAll('.net');
+    for (var i = 0; i < rows.length; i++) {
+      var n = i + 1;
+      var ss = rows[i].querySelector('input[type=text]');
+      var pw = rows[i].querySelector('input[type=password]');
+      var op = rows[i].querySelector('input[type=checkbox]');
+      if (ss) ss.name = 'w.ssid.' + n;
+      if (pw) pw.name = 'w.pass.' + n;
+      if (op) op.name = 'w.open.' + n;
+    }
+  }
+  addBtn.addEventListener('click', function () {
+    var rows = fieldset.querySelectorAll('.net');
+    if (rows.length >= 30) return; // the flash sector's cap; the server refuses more anyway
+    var fresh = rows[0].cloneNode(true);
+    var ss = fresh.querySelector('input[type=text]');
+    var pw = fresh.querySelector('input[type=password]');
+    var op = fresh.querySelector('input[type=checkbox]');
+    if (ss) ss.value = '';
+    if (pw) pw.value = '';
+    if (op) op.checked = false;
+    fieldset.insertBefore(fresh, addWrap);
+    renumber();
+    if (ss) ss.focus();
+  });
+  fieldset.addEventListener('click', function (ev) {
+    if (!ev.target || !ev.target.classList || !ev.target.classList.contains('rm')) return;
+    var rows = fieldset.querySelectorAll('.net');
+    if (rows.length <= 1) return; // keep at least one row
+    var row = ev.target.parentNode;
+    if (row) row.parentNode.removeChild(row);
+    renumber();
+  });
+  renumber();
+})();)js";
+}
+
+// The /setup.js reply: the script above with the no-store/nosniff pair.
+inline HttpReply setupJavaScriptReply() {
+  HttpReply r;
+  r.status = 200;
+  r.contentType = "text/javascript; charset=utf-8";
+  r.body = setupFormJavaScript();
+  r.headers.push_back(std::make_pair("Cache-Control", "no-store"));
+  r.headers.push_back(std::make_pair("X-Content-Type-Options", "nosniff"));
+  return r;
 }
 
 inline HttpReply htmlPage(int status, const std::string& title, const std::string& bodyHtml) {
@@ -366,9 +432,39 @@ inline void buildStoreRows(const std::vector<FormField>& fields, const WifiStore
   if (errors.empty() && outCount == 0) {
     errors.push_back("Fill in at least one WiFi network: the node has nothing to join with");
   }
+  // A filled row beyond the store's capacity must never be SILENTLY dropped
+  // (that would lose a credential the user typed) - say so instead. The
+  // main loop only walks 1..MAX, so a non-empty name at an index past the
+  // capacity is the only way to detect a hand-crafted or out-of-sync form.
+  bool overflow = false;
+  for (int i = WIFI_STORE_MAX_NETS + 1; i <= WIFI_STORE_MAX_NETS + 64 && !overflow; ++i) {
+    const std::string* ssid = findField(fields, rowField("ssid", i));
+    if (ssid != nullptr && !ssid->empty()) overflow = true;
+  }
+  if (overflow) {
+    errors.push_back("The node's flash holds up to 30 WiFi networks - remove a row and save again");
+  }
 }
 
 // ── Rendering ───────────────────────────────────────────────────────────
+
+// One .net row of the setup form: name + password + "open network" + the
+// Remove button (#138). The names carry the 1-based row index; the browser
+// script renumbers the rows when it adds or removes one, so the POST stays
+// sequential. The SSID box mirrors the radio's own 32-byte limit; the
+// password box deliberately has no maxlength (the "blank keeps the stored
+// one" placeholder must never silently cut a longer stored password).
+inline std::string netRowHtml(int index, const std::string& ssid, bool hasPassword, bool open) {
+  const std::string n = std::to_string(static_cast<long long>(index));
+  return "<div class=\"net\"><input type=\"text\" name=\"" + rowField("ssid", index) + "\" maxlength=\"32\" value=\"" +
+         htmlEscape(ssid) + "\" placeholder=\"network name " + n +
+         "\" autocapitalize=\"off\" autocomplete=\"off\" spellcheck=\"false\">"
+         "<input type=\"password\" name=\"" + rowField("pass", index) + "\" autocomplete=\"new-password\" placeholder=\"" +
+         std::string(hasPassword ? "password set - blank keeps it" : "password") + "\">"
+         "<label><input type=\"checkbox\" name=\"" + rowField("open", index) + "\" value=\"1\"" +
+         (open ? " checked" : "") + "> open network</label>"
+         "<button type=\"button\" class=\"rm\">Remove</button></div>";
+}
 
 // The whole form. `submitted` / `errors` are empty on the first visit; after
 // a rejected save they bring the user's (non-secret) input back so nothing
@@ -422,17 +518,21 @@ inline std::string renderForm(const std::string& title, const WifiStoreNet* stor
   h += "<fieldset><legend>WiFi networks</legend>";
   for (int i = 0; i < shown; ++i) {
     const bool have = i < rowCount;
-    const std::string n = std::to_string(static_cast<long long>(i + 1));
-    h += "<div class=\"net\"><input type=\"text\" name=\"" + rowField("ssid", i + 1) + "\" value=\"" +
-         htmlEscape(have ? rows[i].ssid : std::string()) + "\" placeholder=\"network name " + n +
-         "\" autocapitalize=\"off\" autocomplete=\"off\" spellcheck=\"false\">"
-         "<input type=\"password\" name=\"" + rowField("pass", i + 1) + "\" autocomplete=\"new-password\" placeholder=\"" +
-         std::string(have && hasPassword[i] ? "password set - blank keeps it" : "password") + "\">"
-         "<label><input type=\"checkbox\" name=\"" + rowField("open", i + 1) + "\" value=\"1\"" +
-         (have && openRows[i] ? " checked" : "") + "> open network</label></div>";
+    h += netRowHtml(i + 1, have ? rows[i].ssid : std::string(),
+                    have && hasPassword[i], have && openRows[i]);
   }
+  // #138: rows are added and removed in the browser (/setup.js). Without
+  // JavaScript the page still offers two extra blank rows, so a plain
+  // browser can save up to three networks in one pass.
+  h += "<noscript>";
+  for (int i = shown; i < shown + 2 && i < WIFI_STORE_MAX_NETS; ++i) {
+    h += netRowHtml(i + 1, std::string(), false, false);
+  }
+  h += "</noscript>";
+  h += "<div id=\"addwrap\"><button type=\"button\" id=\"addrow\">Add another network</button></div>";
   h += "</fieldset>";
   h += "<button type=\"submit\">Save and restart</button></form>";
+  h += "<script src=\"/setup.js\"></script>";
   return h;
 }
 
@@ -457,6 +557,7 @@ class SetupForm {
   // request body, already limited by the server.
   HttpReply handle(const std::string& method, const std::string& target, const std::string& body) {
     std::string path = target.substr(0, target.find('?'));
+    if (path == "/setup.js") return method == "GET" ? setupJavaScriptReply() : notAllowed("GET");
     if (isCaptivePortalProbe(path)) return method == "GET" ? redirectToForm() : notAllowed("GET");
     if (path == "/") return method == "GET" ? formPage() : notAllowed("GET");
     if (path == "/save") return method == "POST" ? save(body) : notAllowed("POST");

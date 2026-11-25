@@ -55,13 +55,19 @@ namespace espnet {
 // WIFI_STORE_MAX_NETS; SSIDs are 1..32 bytes (the radio's own limit) and
 // passwords 0..63 printable ASCII characters (0 = an open network), the
 // WPA2 passphrase bounds.
-static const int WIFI_STORE_MAX_NETS = 5;
+//
+// 30 networks is the honest cap the flash imposes: the EEPROM space is one
+// 4096-byte flash sector, an entry is at most 97 bytes (32 ssid + tab +
+// 63 password + newline), so 30 entries (2910) + the header fit with room
+// to spare, and the REST of the sector stays free for the node's relay
+// configuration region (task #140, which lands at offset 3000).
+static const int WIFI_STORE_MAX_NETS = 30;
 static const size_t WIFI_STORE_SSID_MAX = 32;
 static const size_t WIFI_STORE_PASS_MAX = 63;
-// The EEPROM region the sketch reserves (wifi_store_hw.h maps the backend
-// onto it): magic + flags + 2-byte length + the blob, comfortably above the
-// worst case (5 * (32 + 1 + 63 + 1) = 485 bytes).
-static const size_t WIFI_STORE_REGION_MAX = 512;
+// The EEPROM region the sketch reserves for the WiFi store
+// (wifi_store_hw.h maps the backend onto it): magic + flags + 2-byte
+// length + the blob, above the worst case (30 * 97 = 2910 bytes).
+static const size_t WIFI_STORE_REGION_MAX = 3000;
 
 // One stored WiFi network. pass == "" means an open network (the node joins
 // it without a password); the setup form marks such rows explicitly.
