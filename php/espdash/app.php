@@ -36,6 +36,24 @@ require __DIR__ . '/lib/Relay.php';
 require __DIR__ . '/lib/Auth.php';
 require __DIR__ . '/lib/Layout.php';
 
+// #149: every page talks to the relay through PHP's curl extension. A
+// missing extension used to fatal deep inside Relay.php ("Call to
+// undefined function curl_init()") with a stack trace an installer cannot
+// act on - say so here, once, with the exact fix.
+if (!extension_loaded('curl')) {
+    http_response_code(500);
+    Layout::header('The PHP curl extension is missing', 'setup');
+    echo '<section class="card narrow">' . "\n";
+    echo '<h1>The PHP curl extension is missing</h1>' . "\n";
+    echo '<p class="msg err">This dashboard talks to the relay through PHP\'s curl extension, and this web server\'s PHP does not have it loaded — every page would fail with "Call to undefined function curl_init()".</p>' . "\n";
+    echo '<p>Install it on the Pi, then reload this page:</p>' . "\n";
+    echo '<pre><code>sudo apt install php-curl' . "\n" . 'sudo systemctl restart apache2</code></pre>' . "\n";
+    echo '<p class="muted">On Debian/Raspberry Pi OS one package covers the command-line PHP and the web server module; the restart is what loads it into Apache.</p>' . "\n";
+    echo '</section>' . "\n";
+    Layout::footer();
+    exit;
+}
+
 Auth::start($CONFIG['session_name']);
 
 function relayClient(): Relay

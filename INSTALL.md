@@ -100,7 +100,15 @@ Data written by the relay (all inside the relay folder, add to your backups):
 
 ## 2. Install the PHP dashboard
 
-Requires PHP ≥ 8 with the `curl` extension (`php -m | grep curl`).
+Requires PHP ≥ 8 with the `curl` extension. On Debian/Raspberry Pi OS:
+
+```bash
+sudo apt install php php-curl     # the PHP web module + the curl extension
+sudo systemctl restart apache2    # loads the extension into the web server
+```
+
+Without the extension the dashboard shows a clean reminder page with these
+same commands instead of a fatal error.
 
 ```bash
 sudo cp -r php/espdash /var/www/html/espdash
