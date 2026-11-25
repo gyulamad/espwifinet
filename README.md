@@ -15,8 +15,8 @@ development (project #3 · Home automation, task #33).
   strength, Logs, Settings (GPIO pin, reporting cadence, offline window,
   node log level, names, plus the relay's read-only system summary),
   Firmware upload.
-- **Node** (`arduino/ESP_node/`, Arduino sketch, one source tree for the
-  ESP8266 and the ESP32 / WROOM32 — board.h carries the few board-specific
+- **Node** (`arduino/ESP_node/`, Arduino sketch, one source tree for every
+  supported ESP board — board.h carries the few board-specific
   bits): multi-network WiFi
   management that always (re)connects to the strongest known network
   (the WiFiMulti pattern), outbound relay connection with

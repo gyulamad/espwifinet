@@ -22,9 +22,8 @@
 //
 // Files: config.h (edit per install), board.h, wifi_store.h, wifi_store_hw.h,
 // setup_logic.h, setup_ap.h, wifi.h, net.h, ota.h, remote_log.h.
-// Board: any ESP8266 (NodeMCU 1.0 / Wemos D1 mini, the tested target) or
-// ESP32 / WROOM32 (#131) — one sketch for both, board.h carries the few
-// board-specific bits (includes, chip id, watchdog, GPIO ceiling).
+// Board: any supported ESP board (#131) — one sketch, board.h carries the
+// few board-specific bits (includes, chip id, watchdog, GPIO ceiling).
 // Settings from the relay override the compiled-in GPIO pin, active level,
 // status interval and log level at runtime, so the sketch usually needs no
 // reflash.

@@ -1,6 +1,6 @@
 // board.h — the one place that knows which board the sketch compiles for
-// (#131). Both the ESP8266 and the ESP32 Arduino core define their macro
-// (ESP8266 / ESP32), so the includes and the few board-specific calls
+// (#131). Each supported Arduino core defines its own board macro, so the
+// includes and the few board-specific calls
 // (chip id, watchdog, GPIO ceiling) resolve at compile time; everything
 // else — the relay protocol, the WiFi roam policy, the OTA flow, the log
 // queue — is board-agnostic and shared unchanged. The sketch keeps ONE
@@ -92,6 +92,6 @@ inline String resetReason() { return ESP.getResetReason(); }
 
 #else
 
-#error "ESP_node targets the ESP8266 and the ESP32 Arduino cores - select the board in the IDE and the core defines ESP8266 or ESP32 itself."
+#error "ESP_node targets the supported ESP Arduino cores - select the board in the IDE and the core defines its board macro itself."
 
 #endif

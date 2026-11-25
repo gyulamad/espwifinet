@@ -1,7 +1,8 @@
 'use strict';
 
 // test_relay_e2e.js — starts the real server.js on scratch ports/dirs and
-// drives it like the production actors do: a simulated ESP8266 node over raw
+// drives it like the production actors do: a simulated node (it reports the
+// esp8266 chip name on the wire) over raw
 // TCP (same wire protocol as arduino/ESP_node) and the PHP frontend's
 // HTTP calls with the shared relay key.
 //
@@ -84,7 +85,8 @@ async function api(httpPort, method, urlPath, body, headers = {}) {
   return { status: res.status, json, text };
 }
 
-// A minimal ESP8266 node over TCP: authenticates, answers pings, and records
+// A minimal node over TCP (esp8266 chip name on the wire): authenticates,
+// answers pings, and records
 // everything the relay sends — the same behaviour the Arduino sketch implements.
 class FakeNode {
   constructor(nodePort, deviceId, apiKey = NODE_KEY) {
@@ -155,7 +157,7 @@ async function step(name, fn) {
   }
 }
 
-// A plausible ESP8266 image for the OTA flow (0xE9 magic + filler).
+// A plausible ESP image for the esp8266 image set (0xE9 magic + filler).
 const IMAGE = Buffer.concat([Buffer.from([0xe9]), Buffer.alloc(100, 0x5a)]);
 
 async function main() {

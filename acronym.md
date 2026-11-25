@@ -17,9 +17,9 @@ the docs use them the same way and a reader may wonder.
 | DNS | Domain Name System | name resolution; the node's setup mode (#135) runs a captive DNS that answers every name with the node's own address, so a phone opens the setup page by itself |
 | e2e | end-to-end | the Node test level in `run_tests.sh` that starts the real relay and drives it with a simulated node over raw TCP |
 | EEPROM | Electrically Erasable Programmable Read-Only Memory | the emulated-EEPROM flash region where the node keeps its setup-page WiFi list (#135); it survives a reflash and is cleared only by a flash erase |
-| ESP | Espressif (chip maker) — name | the ESP8266/ESP32 board family; "ESP Wifi Network" is this project's name |
+| ESP | Espressif (chip maker) — name | the family of ESP boards this project runs on; "ESP Wifi Network" is this project's name |
 | ESP-12E | Espressif module variant — name | the module on the "NodeMCU 1.0 (ESP-12E module)" board named in the flashing instructions |
-| ESP8266 | Espressif Wi-Fi microcontroller — name | one of the two boards the sketch targets (with the ESP32/WROOM32) |
+| ESP8266 | Espressif Wi-Fi microcontroller — name | kept in these docs only where an identifier literally carries it: the board core's Boards Manager entry, the compile FQBN, the chip name the node reports on the wire |
 | FW | firmware | `FW_VERSION` in the sketch's `config.h`, bumped before compiling a new OTA release |
 | GPIO | General-Purpose Input/Output | the pin the dashboard toggle drives on every node; default GPIO 5 (D1 on NodeMCU/Wemos boards) |
 | HTML | HyperText Markup Language | the dashboard markup, escaped through one helper |
@@ -33,7 +33,7 @@ the docs use them the same way and a reader may wonder.
 | md5 | Message-Digest algorithm 5 | the checksum stored alongside the served OTA image |
 | NAT | Network Address Translation | NAT routers/extenders the nodes work behind unchanged, because every connection is outbound |
 | npm | Node.js package manager (officially not an acronym) — name | installs the relay's dependencies (`npm install --omit=dev`) |
-| NodeMCU | "Node MicroController Unit" (board name) — name | the ESP8266 board family the flashing instructions name |
+| NodeMCU | "Node MicroController Unit" (board name) — name | the board family behind the tested target's FQBN (a literal build identifier) |
 | OTA | Over-The-Air | the firmware self-update: nodes poll the relay, download, flash and reboot |
 | PHP | "PHP: Hypertext Preprocessor" (recursive) | the dashboard frontend; PHP ≥ 8 with the curl extension |
 | RSSI | Received Signal Strength Indicator | the per-node signal strength carried in every status report |

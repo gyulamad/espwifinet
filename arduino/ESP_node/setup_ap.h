@@ -75,7 +75,7 @@
 #include <DNSServer.h>
 #include <esp8266_peri.h> // RANDOM_REG32: the hardware RNG register
 #else
-#error "setup_ap.h targets the ESP8266 and the ESP32 Arduino cores."
+#error "setup_ap.h targets the supported ESP Arduino cores."
 #endif
 
 #ifndef ESPNET_SETUP_HTTP_PORT

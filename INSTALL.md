@@ -121,14 +121,14 @@ Open `http://<pi-ip>/espdash/`, sign in, and you are done. The dashboard is
 used over plain HTTP on a home LAN; put it behind TLS (or an SSH tunnel)
 before exposing it anywhere beyond that.
 
-## 3. Flash a node (ESP8266 or ESP32, #131)
+## 3. Flash a node (#131)
 
 In the Arduino IDE (or arduino-cli):
 
-1. Install the **ESP8266 core** (Boards Manager URL:
+1. Install the **core for your board** (Boards Manager URL:
    `https://arduino.esp8266.com/stable/package_esp8266com_index.json`).
-2. Open `arduino/ESP_node/ESP_node.ino` — ONE sketch for both boards
-   (#131): the ESP8266 and the ESP32 core each define their own macro and
+2. Open `arduino/ESP_node/ESP_node.ino` — ONE sketch for every supported
+   ESP board (#131): each board's core defines its own board macro and
    `board.h` picks the includes, the chip id, the watchdog feed and the GPIO
    ceiling from it. No per-board code to maintain.
 3. Edit `config.h`: the WiFi network list (see below), `RELAY_HOST` (the
@@ -225,18 +225,19 @@ Details worth knowing:
        --output-dir ./build arduino/ESP_node
    # -> ./build/ESP_node.ino.bin
 
-   For an ESP32 / WROOM32 node: install the **ESP32 core** (Boards Manager
-   URL `https://espressif.github.io/arduino-esp32/package_esp32_index.json`),
-   pick your ESP32 board instead, and compile the SAME sketch folder:
+   For a node on the other supported board: install its **core** (Boards
+   Manager URL `https://espressif.github.io/arduino-esp32/package_esp32_index.json`),
+   pick your exact board instead, and compile the SAME sketch folder:
 
    arduino-cli compile --fqbn esp32:esp32:esp32 \
        --output-dir ./build esp32 arduino/ESP_node
-   # -> ./build/ESP_node.ino.bin (the esp32 image)
+   # -> ./build/ESP_node.ino.bin (that board's image)
 
-   GPIO legs: ESP8266 0–16; ESP32 0–33 except its flash pins 6–11 (34–39 are
-   input-only). The node refuses a pushed pin its board cannot drive and
-   keeps its current leg (board.h's guard), so a pushed setting can never
-   brick either board.
+   GPIO legs are board-dependent: the ceilings and the excluded flash/strap
+   pins live in `board.h`, and the guard there refuses a pushed pin the
+   connected board cannot drive and keeps its current leg, so a pushed
+   setting can never brick the node. The settings page repeats the safe
+   range for the fleet.
    ```
    Bump `FW_VERSION` in `config.h` before compiling a new release.
 2. Dashboard → Firmware → set the version, upload the `.bin`.

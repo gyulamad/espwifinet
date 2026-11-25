@@ -99,7 +99,7 @@ echo Auth::csrfField() . "\n";
 echo '<fieldset>' . "\n";
 echo '<legend>Switch output</legend>' . "\n";
 echo '<label>GPIO pin (0–33) — the leg every node switches <input name="gpioPin" value="' . e($settings['gpioPin'] ?? 5) . '" inputmode="numeric" pattern="[0-9]{1,2}" required></label>' . "\n";
-echo '<p class="muted">Range 0–33 covers both boards (#131): ESP8266 legs 0–16, ESP32 legs 0–33 minus its flash pins 6–11. A node whose board cannot drive the pushed pin keeps its current leg and reports it back.</p>' . "\n";
+echo '<p class="muted">Range 0–33 covers every supported board (#131); each board drives its own subset - the ceilings and the excluded flash/strap pins live in board.h. A node whose board cannot drive the pushed pin keeps its current leg and reports it back.</p>' . "\n";
 echo '<label class="check"><input type="checkbox" name="gpioActiveHigh"' . (!empty($settings['gpioActiveHigh']) ? ' checked' : '') . '> active-HIGH (ON = 3.3 V). Untick for active-LOW relay boards.</label>' . "\n";
 echo '</fieldset>' . "\n";
 echo '<fieldset>' . "\n";

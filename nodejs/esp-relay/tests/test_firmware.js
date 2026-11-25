@@ -5,7 +5,7 @@
 const assert = require('assert');
 const fw = require('../lib/firmware');
 
-// A minimal plausible ESP8266 image header: 0xE9 magic + 15 filler bytes.
+// A minimal plausible ESP image header (esp8266 image set): 0xE9 magic + 15 filler bytes.
 const IMAGE = Buffer.concat([Buffer.from([0xe9]), Buffer.alloc(15, 0xaa)]);
 
 function run() {
