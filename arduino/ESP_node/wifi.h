@@ -247,7 +247,11 @@ class WifiMulti {
     phase_ = Phase::Disconnected;
     lastAttemptMs_ = millis();
     say(LOG_WARN, "wifi: %s, retry in %lu ms", why, (unsigned long)backoffMs_);
-    backoffMs_ = min(backoffMs_ * 2, WIFI_RETRY_MAX_MS);
+    // (uint32_t) on the cap: the ESP8266 core defines min() as a macro and
+    // takes mixed types, but the ESP32 core has no macro - this resolves to
+    // std::min and both sides must deduce the same type (the real esp32
+    // compile caught the int literal against backoffMs_'s uint32_t; #131 v2).
+    backoffMs_ = min(backoffMs_ * 2, (uint32_t)WIFI_RETRY_MAX_MS);
   }
 
   int indexOfSsid(const char* ssid) const {

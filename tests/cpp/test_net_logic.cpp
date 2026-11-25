@@ -42,12 +42,29 @@ static void assertBoardSelection() {
   assert(!espnet::gpioPinAllowed(34));
   assert(!espnet::gpioPinAllowed(6) && !espnet::gpioPinAllowed(11)); // flash pins
   assert(!espnet::gpioPinAllowed(-1));
+  // The ESP32 desktop build must ride the real ESP32 core's surface: no
+  // min()/max() macros (the real core resolves them to std::min), and the
+  // reset reason comes from esp_reset_reason() - the stub steerable through
+  // espResetReasonState() - because EspClass has no getResetReason() there
+  // (the exact API mismatch the real esp32 compile caught in v1, #131 v2).
+#ifdef min
+#error "the ESP32 desktop build must not define the min() macro (the real ESP32 core does not)"
+#endif
+  espResetReasonState() = ESP_RST_POWERON;
+  assert(std::string(espnet::resetReason().c_str()) == "Power on");
+  espResetReasonState() = ESP_RST_TASK_WDT;
+  assert(std::string(espnet::resetReason().c_str()) == "Task Watchdog");
+  espResetReasonState() = ESP_RST_BROWNOUT;
+  assert(std::string(espnet::resetReason().c_str()) == "Brownout");
+  espResetReasonState() = ESP_RST_UNKNOWN;
+  assert(std::string(espnet::resetReason().c_str()) == "Unknown");
 #else // ESP8266
   assert(std::string(ESPNET_CHIP_NAME) == "esp8266");
   assert(std::string(ESPNET_FIRMWARE_PATH) == "/firmware/node.bin");
   assert(espnet::gpioPinAllowed(0) && espnet::gpioPinAllowed(16));
   assert(!espnet::gpioPinAllowed(17));
   assert(!espnet::gpioPinAllowed(-1));
+  assert(std::string(espnet::resetReason().c_str()) == "External System"); // the stub's word
 #endif
 }
 

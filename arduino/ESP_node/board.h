@@ -28,6 +28,7 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <esp_system.h> // esp_reset_reason(): the ESP32 core has no ESP.getResetReason()
 
 #define ESPNET_CHIP_NAME "esp32"
 #define ESPNET_FIRMWARE_PATH "/firmware/node-esp32.bin"
@@ -45,7 +46,25 @@ inline void feedWdt() {} // the loop task's watchdog is off by default
 
 inline uint32_t chipId() { return (uint32_t)(ESP.getEfuseMac() & 0xffffffffULL); }
 
-inline String resetReason() { return ESP.getResetReason(); }
+// The ESP32 core's EspClass has no getResetReason() (that member is
+// ESP8266-only - the v1 desktop stub hid the difference because its fake ESP
+// class carried the ESP8266 surface on both builds, so the real esp32 compile
+// caught what the suite could not); the reason comes from the system layer
+// instead, mapped to the same short words the ESP8266 reports.
+inline String resetReason() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:   return String("Power on");
+    case ESP_RST_SW:        return String("Software restart");
+    case ESP_RST_PANIC:     return String("Exception");
+    case ESP_RST_INT_WDT:   return String("Interrupt Watchdog");
+    case ESP_RST_TASK_WDT:  return String("Task Watchdog");
+    case ESP_RST_WDT:       return String("Hardware Watchdog");
+    case ESP_RST_DEEPSLEEP: return String("Deep-Sleep Wake");
+    case ESP_RST_BROWNOUT:  return String("Brownout");
+    case ESP_RST_SDIO:      return String("SDIO Reset");
+    default:                return String("Unknown");
+  }
+}
 
 } // namespace espnet
 

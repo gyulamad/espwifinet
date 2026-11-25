@@ -78,14 +78,22 @@ class Stream {
 class EspStub {
  public:
   unsigned long getFreeHeap() { return 20000; }
-  String getResetReason() { return String("External System"); }
-  unsigned getChipId() { return 0x00A1B2C3; }
-  // #131: the ESP32 core exposes the eFuse MAC instead of a chip id; the
-  // sketch uses its low 32 bits (board.h's espnet::chipId()).
-  unsigned long long getEfuseMac() { return 0xA1B2C3D4E5F6ULL; }
-  void wdtFeed() {}
   void restart() { restarted = true; }
   bool restarted = false;
+#if defined(ESP32)
+  // The ESP32 core's EspClass: the eFuse MAC instead of a chip id, and NO
+  // getResetReason() / getChipId() / wdtFeed() (the reset reason lives in
+  // esp_system.h's esp_reset_reason(), the loop WDT is off by default).
+  // v1 stubbed the ESP8266 surface on both builds, so the desktop esp32
+  // build could not catch the getResetReason() call the real esp32 compile
+  // refused - keep this split honest (board.h's ESP32 branch must compile
+  // against exactly what the real core offers).
+  unsigned long long getEfuseMac() { return 0xA1B2C3D4E5F6ULL; }
+#else // ESP8266
+  String getResetReason() { return String("External System"); }
+  unsigned getChipId() { return 0x00A1B2C3; }
+  void wdtFeed() {}
+#endif
 };
 // (the test build defines the global `ESP` object itself)
 
@@ -153,5 +161,13 @@ class WiFiStub {
 };
 // (the test build defines the global `WiFi` object itself)
 
+// min()/max() are macros on the ESP8266 core (mixed argument types compile),
+// but the ESP32 core defines NO macros - its calls resolve to std::min and
+// both sides must deduce the same type. The v1 stub carried the macros on
+// both builds, so the desktop esp32 build accepted the mixed-type min() in
+// wifi.h that the real esp32 toolchain refused. The ESP32 desktop build
+// rides the real core's surface (see esp32/Arduino.h, which undefines these).
+#if defined(ESP8266)
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define max(a, b) ((a) > (b) ? (a) : (b))
+#endif
