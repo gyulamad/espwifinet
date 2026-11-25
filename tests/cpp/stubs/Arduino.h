@@ -80,6 +80,9 @@ class EspStub {
   unsigned long getFreeHeap() { return 20000; }
   String getResetReason() { return String("External System"); }
   unsigned getChipId() { return 0x00A1B2C3; }
+  // #131: the ESP32 core exposes the eFuse MAC instead of a chip id; the
+  // sketch uses its low 32 bits (board.h's espnet::chipId()).
+  unsigned long long getEfuseMac() { return 0xA1B2C3D4E5F6ULL; }
   void wdtFeed() {}
   void restart() { restarted = true; }
   bool restarted = false;

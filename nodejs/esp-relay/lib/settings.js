@@ -35,10 +35,15 @@ const DEFAULT_SETTINGS = {
 // as a warning the dashboard shows next to the save button.
 const RISKY_GPIO_PINS = [0, 1, 2, 3, 15];
 
-// The full valid range on the ESP8266 (D0..D8 map onto 16, 5, 4, 0, 2, 14, 12,
-// 13, 15 on the common NodeMCU/Wemos boards).
+// The widest valid range across the boards the fleet runs (#131): the
+// ESP8266 stops at 16, the ESP32 at 33. The setting is one global value on
+// purpose (one toggle, one leg), so a mixed fleet shares it — each NODE
+// decides whether ITS board can actually drive the pushed pin (board.h's
+// gpioPinAllowed: an ESP8266 keeps its leg when 17+ arrives, an ESP32
+// refuses its flash pins 6..11) and keeps the previous one otherwise. The
+// node's gpio_ack then tells the dashboard what really happened.
 function isGpioPinAllowed(pin) {
-  return Number.isInteger(pin) && pin >= 0 && pin <= 16;
+  return Number.isInteger(pin) && pin >= 0 && pin <= 33;
 }
 
 // Validates one settings object. Returns { ok: true, value, warnings } or

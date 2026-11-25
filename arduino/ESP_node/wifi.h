@@ -22,7 +22,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
+#include "board.h"
 #include "remote_log.h"
 
 // ── tunables (a sketch can #define them before including wifi.h) ──

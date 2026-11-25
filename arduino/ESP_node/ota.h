@@ -13,8 +13,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
+#include "board.h"
 #include <WiFiClient.h>
 #include <Update.h>
 
@@ -69,7 +68,10 @@ class OtaUpdater {
   bool fetchVersion(char* out, size_t outLen) {
     WiFiClient client;
     HTTPClient http;
-    String url = String("http://") + host_ + ":" + String(httpPort_) + "/firmware/version";
+    // #131: the chip rides in the query so the relay serves the version of the
+    // image built for THIS board; the relay keeps the chip-less URL answering
+    // the esp8266 image for the nodes deployed before the split.
+    String url = String("http://") + host_ + ":" + String(httpPort_) + "/firmware/version?chip=" + ESPNET_CHIP_NAME;
     if (!http.begin(client, url)) return false;
     http.setTimeout(5000);
     const int code = http.GET();
@@ -92,7 +94,7 @@ class OtaUpdater {
   bool flashFirmware() {
     WiFiClient client;
     HTTPClient http;
-    String url = String("http://") + host_ + ":" + String(httpPort_) + "/firmware/node.bin";
+    String url = String("http://") + host_ + ":" + String(httpPort_) + ESPNET_FIRMWARE_PATH;
     if (!http.begin(client, url)) return false;
     http.setTimeout(15000);
     const int code = http.GET();

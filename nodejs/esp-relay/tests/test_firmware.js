@@ -10,10 +10,11 @@ const IMAGE = Buffer.concat([Buffer.from([0xe9]), Buffer.alloc(15, 0xaa)]);
 
 function run() {
   // image plausibility
-  assert.strictEqual(fw.isPlausibleEsp8266Image(IMAGE), true);
-  assert.strictEqual(fw.isPlausibleEsp8266Image(Buffer.alloc(16, 0x00)), false);
-  assert.strictEqual(fw.isPlausibleEsp8266Image(Buffer.from([0xe9])), false); // too short
-  assert.strictEqual(fw.isPlausibleEsp8266Image(null), false);
+  // the 0xE9 magic is the ESP image header for BOTH boards (#131)
+  assert.strictEqual(fw.isPlausibleEspImage(IMAGE), true);
+  assert.strictEqual(fw.isPlausibleEspImage(Buffer.alloc(16, 0x00)), false);
+  assert.strictEqual(fw.isPlausibleEspImage(Buffer.from([0xe9])), false); // too short
+  assert.strictEqual(fw.isPlausibleEspImage(null), false);
 
   // version comparison
   assert.strictEqual(fw.compareVersions('1.0.0', '1.0.0'), 0);
@@ -45,6 +46,26 @@ function run() {
   assert.strictEqual(badVer.ok, false);
   const badImg = fw.storeFirmware('/fw', Buffer.alloc(20, 1), '1.2.3', atomic);
   assert.strictEqual(badImg.ok, false);
+
+  // #131: per-chip image sets — esp8266 keeps the original file names (the
+  // deployed fleet keeps updating), esp32 gets suffixed ones, an unknown
+  // chip is refused, and the version reply reads the right set back.
+  const writes32 = [];
+  const atomic32 = (f, data) => writes32.push([f, data]);
+  const ok32 = fw.storeFirmware('/fw', IMAGE, '2.0.0', atomic32, 'esp32');
+  assert.strictEqual(ok32.ok, true);
+  assert.strictEqual(writes32.length, 3);
+  assert.ok(writes32.some(([f]) => f.endsWith('node-esp32.bin')), 'the esp32 image lands under its own name');
+  assert.ok(writes32.some(([f]) => f.endsWith('version-esp32.txt')), 'the esp32 version under its own name');
+  assert.ok(!writes32.some(([f]) => f.endsWith('/node.bin')), 'the esp8266 image is untouched');
+
+  const badChip = fw.storeFirmware('/fw', IMAGE, '1.0.0', atomic, 'esp8267');
+  assert.strictEqual(badChip.ok, false);
+  assert.ok(badChip.errors.some((e) => /unknown chip/.test(e)));
+
+  assert.strictEqual(fw.imageFileName('esp8266'), 'node.bin');
+  assert.strictEqual(fw.imageFileName('esp32'), 'node-esp32.bin');
+  assert.strictEqual(fw.imageFileName('esp8267'), 'node.bin'); // unknown -> the safe default
 
   // version reply shape
   const dir = {

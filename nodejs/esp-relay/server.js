@@ -425,9 +425,15 @@ app.get('/api/logs/devices', (req, res) => {
   res.json({ devices: logs.listDevices() });
 });
 
-// GET /api/firmware — what the OTA page shows.
+// GET /api/firmware — what the OTA page shows, per board (#131): the two
+// chips' image sets live side by side. `current` keeps meaning the esp8266
+// set so an existing dashboard/API consumer reads the same shape as before.
 app.get('/api/firmware', (req, res) => {
-  res.json({ current: firmware.currentFirmware(FIRMWARE_DIR) });
+  res.json({
+    esp8266: firmware.currentFirmware(FIRMWARE_DIR, 'esp8266'),
+    esp32: firmware.currentFirmware(FIRMWARE_DIR, 'esp32'),
+    current: firmware.currentFirmware(FIRMWARE_DIR, 'esp8266'),
+  });
 });
 
 // POST /api/firmware — the OTA page's upload. The PHP client sends the raw
@@ -438,26 +444,43 @@ app.post('/api/firmware', (req, res) => {
     res.status(400).json({ errors: ['empty body — send the raw .bin as application/octet-stream'] });
     return;
   }
-  const result = firmware.storeFirmware(FIRMWARE_DIR, req.body, String(req.query.version || ''), writeFileAtomic);
+  const chip = String(req.query.chip || 'esp8266');
+  const result = firmware.storeFirmware(FIRMWARE_DIR, req.body, String(req.query.version || ''), writeFileAtomic, chip);
   if (!result.ok) {
     res.status(400).json({ errors: result.errors });
     return;
   }
-  logs.append({ level: 'info', device: 'relay', msg: `firmware ${result.version} stored (${result.size} bytes, md5 ${result.md5})` });
-  res.json({ ok: true, ...result });
+  logs.append({ level: 'info', device: 'relay', msg: `firmware ${result.version} stored for ${chip} (${result.size} bytes, md5 ${result.md5})` });
+  res.json({ ok: true, chip, ...result });
 });
 
 // Node-facing OTA endpoints (the node knows RELAY_HOST:PORT already):
-//   GET /firmware/version -> "<version>\n<md5>\n"
-//   GET /firmware/node.bin
+//   GET /firmware/version?chip=<chip> -> "<version>\n<md5>\n"
+//   GET /firmware/node.bin            (the esp8266 image)
+//   GET /firmware/node-esp32.bin      (the esp32 image)
+// The chip-less URLs keep answering the esp8266 set so the nodes deployed
+// before the per-board split keep updating unchanged; an ESP32 node asks
+// with its chip (board.h's ESPNET_CHIP_NAME rides in the query) and
+// downloads its own image path (board.h's ESPNET_FIRMWARE_PATH).
 // These are unauthenticated but read-only and useless without network access
 // to the relay; espcamsys2 serves them the same way.
 app.get('/firmware/version', (req, res) => {
-  res.type('text/plain').send(firmware.versionReply(FIRMWARE_DIR));
+  const chip = String(req.query.chip || 'esp8266');
+  if (!firmware.isKnownChip(chip)) {
+    res.status(404).type('text/plain').send('unknown chip\n');
+    return;
+  }
+  res.type('text/plain').send(firmware.versionReply(FIRMWARE_DIR, chip));
 });
 app.get('/firmware/node.bin', (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.sendFile(path.join(FIRMWARE_DIR, 'node.bin'), (err) => {
+  res.sendFile(path.join(FIRMWARE_DIR, firmware.imageFileName('esp8266')), (err) => {
+    if (err && !res.headersSent) res.status(404).end('no firmware uploaded');
+  });
+});
+app.get('/firmware/node-esp32.bin', (req, res) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.sendFile(path.join(FIRMWARE_DIR, firmware.imageFileName('esp32')), (err) => {
     if (err && !res.headersSent) res.status(404).end('no firmware uploaded');
   });
 });

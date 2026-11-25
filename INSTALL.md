@@ -121,13 +121,16 @@ Open `http://<pi-ip>/espdash/`, sign in, and you are done. The dashboard is
 used over plain HTTP on a home LAN; put it behind TLS (or an SSH tunnel)
 before exposing it anywhere beyond that.
 
-## 3. Flash an ESP8266 node
+## 3. Flash a node (ESP8266 or ESP32, #131)
 
 In the Arduino IDE (or arduino-cli):
 
 1. Install the **ESP8266 core** (Boards Manager URL:
    `https://arduino.esp8266.com/stable/package_esp8266com_index.json`).
-2. Open `arduino/ESP8266_Node/ESP8266_Node.ino`.
+2. Open `arduino/ESP_node/ESP_node.ino` — ONE sketch for both boards
+   (#131): the ESP8266 and the ESP32 core each define their own macro and
+   `board.h` picks the includes, the chip id, the watchdog feed and the GPIO
+   ceiling from it. No per-board code to maintain.
 3. Edit `config.h`: the WiFi network list (see below), `RELAY_HOST` (the
    Pi's IP), `RELAY_PORT` (7777), `NODE_KEY` (the same key as `nodeKey` in
    the relay's config.js). Leave `DEVICE_ID` empty to auto-derive a unique
@@ -172,8 +175,21 @@ settings page warns about them.
 1. Export/compile the sketch as a binary, e.g. with arduino-cli:
    ```bash
    arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 \
-       --output-dir ./build arduino/ESP8266_Node
-   # -> ./build/ESP8266_Node.ino.bin
+       --output-dir ./build arduino/ESP_node
+   # -> ./build/ESP_node.ino.bin
+
+   For an ESP32 / WROOM32 node: install the **ESP32 core** (Boards Manager
+   URL `https://espressif.github.io/arduino-esp32/package_esp32_index.json`),
+   pick your ESP32 board instead, and compile the SAME sketch folder:
+
+   arduino-cli compile --fqbn esp32:esp32:esp32 \
+       --output-dir ./build esp32 arduino/ESP_node
+   # -> ./build/ESP_node.ino.bin (the esp32 image)
+
+   GPIO legs: ESP8266 0–16; ESP32 0–33 except its flash pins 6–11 (34–39 are
+   input-only). The node refuses a pushed pin its board cannot drive and
+   keeps its current leg (board.h's guard), so a pushed setting can never
+   brick either board.
    ```
    Bump `FW_VERSION` in `config.h` before compiling a new release.
 2. Dashboard → Firmware → set the version, upload the `.bin`.

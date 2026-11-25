@@ -54,7 +54,10 @@ function applyStatusMessage(dev, msg) {
   if (Number.isFinite(msg.rssi) && msg.rssi >= -100 && msg.rssi <= 0) dev.rssi = Math.round(msg.rssi);
   if (Number.isFinite(msg.heapFree) && msg.heapFree >= 0) dev.heapFree = Math.round(msg.heapFree);
   if (Number.isFinite(msg.uptimeMs) && msg.uptimeMs >= 0) dev.uptimeMs = Math.round(msg.uptimeMs);
-  if (Number.isInteger(msg.gpioPin) && msg.gpioPin >= 0 && msg.gpioPin <= 16) dev.gpioPin = msg.gpioPin;
+  // Pin the node says it is actually driving: the ESP8266 tops out at 16,
+  // the ESP32 at 33 (#131) — a value past the board's own ceiling never
+  // arrives because board.h's guard refused it on the node already.
+  if (Number.isInteger(msg.gpioPin) && msg.gpioPin >= 0 && msg.gpioPin <= 33) dev.gpioPin = msg.gpioPin;
   if (msg.gpioState === 'on' || msg.gpioState === 'off') dev.gpioState = msg.gpioState;
 }
 

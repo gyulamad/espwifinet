@@ -28,10 +28,12 @@ class Relay
     }
 
     // POST raw binary (firmware upload) with a ?version= query parameter.
-    public function postBinary($path, $bytes, $version)
+    public function postBinary($path, $bytes, $version, $chip = 'esp8266')
     {
+        // #131: ?chip= picks the board's image set on the relay (esp8266
+        // default, esp32) so a mixed fleet never flashes another board's bin.
         $sep = (strpos($path, '?') === false) ? '?' : '&';
-        return $this->request('POST', $path . $sep . 'version=' . rawurlencode($version), $bytes, 'application/octet-stream');
+        return $this->request('POST', $path . $sep . 'version=' . rawurlencode($version) . '&chip=' . rawurlencode($chip), $bytes, 'application/octet-stream');
     }
 
     // Low-level call: 5 s timeouts keep a hung relay from hanging the page;

@@ -23,10 +23,33 @@ static unsigned long fakeNow = 1000;
 unsigned long millis() { return fakeNow; }
 void delay(unsigned long) {}
 
-#include "../../arduino/ESP8266_Node/remote_log.h"
-#include "../../arduino/ESP8266_Node/net.h"
-#include "../../arduino/ESP8266_Node/wifi.h"
-#include "../../arduino/ESP8266_Node/ota.h"
+#include "../../arduino/ESP_node/remote_log.h"
+#include "../../arduino/ESP_node/net.h"
+#include "../../arduino/ESP_node/wifi.h"
+#include "../../arduino/ESP_node/ota.h"
+
+// ── #131: the board selection resolved (one build per board, same sources).
+// The desktop build defines ESP8266 or ESP32 explicitly; on hardware the
+// core itself defines the macro. board.h carries the per-board differences:
+// chip name for the relay hello, the OTA image path, the GPIO ceiling (the
+// ESP32 additionally refuses its flash pins 6..11).
+static void assertBoardSelection() {
+#if defined(ESP32)
+  assert(std::string(ESPNET_CHIP_NAME) == "esp32");
+  assert(std::string(ESPNET_FIRMWARE_PATH) == "/firmware/node-esp32.bin");
+  assert(espnet::gpioPinAllowed(16));
+  assert(espnet::gpioPinAllowed(33));
+  assert(!espnet::gpioPinAllowed(34));
+  assert(!espnet::gpioPinAllowed(6) && !espnet::gpioPinAllowed(11)); // flash pins
+  assert(!espnet::gpioPinAllowed(-1));
+#else // ESP8266
+  assert(std::string(ESPNET_CHIP_NAME) == "esp8266");
+  assert(std::string(ESPNET_FIRMWARE_PATH) == "/firmware/node.bin");
+  assert(espnet::gpioPinAllowed(0) && espnet::gpioPinAllowed(16));
+  assert(!espnet::gpioPinAllowed(17));
+  assert(!espnet::gpioPinAllowed(-1));
+#endif
+}
 
 // ── helpers ──
 static std::string framed(const std::string& json) {
@@ -345,6 +368,8 @@ static void testMinLogFilter() {
 }
 
 int main() {
+  assertBoardSelection();
+
   testJsonReaders();
   printf("PASS json readers\n");
   testLogQueue();

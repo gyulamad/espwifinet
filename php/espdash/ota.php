@@ -1,7 +1,10 @@
 <?php
 // ota.php — firmware page: what version the relay currently serves, and the
 // upload form. Nodes poll /firmware/version on the relay and self-update
-// when the served version differs from theirs (see arduino/ESP8266_Node).
+// when the served version differs from theirs (see arduino/ESP_node).
+// Since #131 the sketch is one source tree for the ESP8266 AND the ESP32,
+// and the relay stores/serves an image set per chip: upload each board's
+// .bin with its board selected, the nodes only ever ask for their own.
 
 require __DIR__ . '/app.php';
 Auth::requireLogin();
@@ -31,7 +34,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         if ($bytes === false) {
             $errors[] = 'Could not read the uploaded file.';
         } else {
-            $res = $relay->postBinary('/api/firmware', $bytes, $version);
+            $chip = ($_POST['chip'] ?? 'esp8266') === 'esp32' ? 'esp32' : 'esp8266';
+            $res = $relay->postBinary('/api/firmware', $bytes, $version, $chip);
             if ($res['ok'] && isset($res['body']['ok'])) {
                 $notices[] = 'Firmware ' . $version . ' stored (' . ($res['body']['size'] ?? '?') . ' bytes). Nodes pick it up on their next OTA check.';
             } else {
@@ -47,6 +51,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
 
 $fw = $relay->get('/api/firmware');
 $current = ($fw['ok'] && is_array($fw['body']['current'] ?? null)) ? $fw['body']['current'] : null;
+$perChip = [];
+foreach (['esp8266', 'esp32'] as $chipName) {
+    $perChip[$chipName] = ($fw['ok'] && is_array($fw['body'][$chipName] ?? null)) ? $fw['body'][$chipName] : null;
+}
 
 Layout::header('Firmware', 'ota');
 Layout::messages($errors, $notices);
@@ -54,14 +62,18 @@ Layout::messages($errors, $notices);
 echo '<section class="card narrow">' . "\n";
 echo '<h1>Firmware (OTA)</h1>' . "\n";
 echo '<p class="muted">Nodes check the relay every ' . '60' . ' s and flash the served image when its version differs from theirs. Build the sketch with Arduino IDE or arduino-cli (see INSTALL.md) and upload the .bin here.</p>' . "\n";
-echo '<p>Currently served: <strong>' . e(is_array($current) && isset($current['version']) ? $current['version'] : 'nothing yet — upload one below') . '</strong>';
-if (is_array($current) && !empty($current['md5'])) {
-    echo ' · md5 <code>' . e($current['md5']) . '</code>';
+foreach (['esp8266' => 'ESP8266', 'esp32' => 'ESP32 / WROOM32'] as $chipName => $chipLabel) {
+    $set = $perChip[$chipName];
+    echo '<p>Served for ' . $chipLabel . ': <strong>' . e(is_array($set) && isset($set['version']) ? $set['version'] : 'nothing yet') . '</strong>';
+    if (is_array($set) && !empty($set['md5'])) {
+        echo ' · md5 <code>' . e($set['md5']) . '</code>';
+    }
+    echo '</p>' . "\n";
 }
-echo '</p>' . "\n";
 echo '<form method="post" action="ota.php" enctype="multipart/form-data">' . "\n";
 echo Auth::csrfField() . "\n";
 echo '<label>Version <input name="version" placeholder="1.0.1" pattern="[A-Za-z0-9._-]{1,32}" required></label>' . "\n";
+echo '<label>Board <select name="chip"><option value="esp8266">ESP8266 (NodeMCU / Wemos)</option><option value="esp32">ESP32 / WROOM32</option></select></label>' . "\n";
 echo '<label>Firmware image (.bin) <input type="file" name="firmware" accept=".bin" required></label>' . "\n";
 echo '<button type="submit">Upload firmware</button>' . "\n";
 echo '</form>' . "\n";

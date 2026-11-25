@@ -1,4 +1,4 @@
-// ESP8266_Node.ino — one node of the ESP Wifi Network (task #33 base
+// ESP_node.ino — one node of the ESP Wifi Network (task #33 base
 // project, #36 setup & settings). Role of this sketch:
 //   - join WiFi through the multi-network manager (wifi.h): always
 //     (re)connects to the STRONGEST of the networks listed in config.h,
@@ -11,13 +11,15 @@
 //   - log to the relay (remote_log.h) and keep itself updated over OTA
 //     (ota.h).
 //
-// Files: config.h (edit per install), wifi.h, net.h, ota.h, remote_log.h.
-// Board: any ESP8266 (NodeMCU 1.0 / Wemos D1 mini as the tested target).
+// Files: config.h (edit per install), board.h, wifi.h, net.h, ota.h, remote_log.h.
+// Board: any ESP8266 (NodeMCU 1.0 / Wemos D1 mini, the tested target) or
+// ESP32 / WROOM32 (#131) — one sketch for both, board.h carries the few
+// board-specific bits (includes, chip id, watchdog, GPIO ceiling).
 // Settings from the relay override the compiled-in GPIO pin, active level,
 // status interval and log level at runtime, so the sketch usually needs no
 // reflash.
 
-#include <ESP8266WiFi.h>
+#include "board.h"
 
 #include "config.h"
 #include "net.h"
@@ -84,7 +86,7 @@ static const char* gpioStateText() {
 
 // ── net hooks (see NetHooks in net.h) ──
 static void onSettings(long pin, bool activeHigh, long statusMs, long minLevel) {
-  if (pin >= 0 && pin <= 16 && pin != gpioPin) {
+  if (espnet::gpioPinAllowed(pin) && pin != gpioPin) {
     nodeLog.logf(espnet::LOG_INFO, "settings: gpio pin %ld -> %ld", gpioPin, pin);
     gpioPin = pin;
   }
@@ -106,8 +108,8 @@ static void onSettings(long pin, bool activeHigh, long statusMs, long minLevel) 
 
 static void onSetGpio(const char* state, long pin, bool activeHigh) {
   gpioStateOn = (strcmp(state, "on") == 0);
-  if (pin >= 0 && pin <= 16) gpioPin = pin;
-  if (pin >= 0 && pin <= 16) gpioActiveHigh = activeHigh;
+  if (espnet::gpioPinAllowed(pin)) gpioPin = pin;
+  if (espnet::gpioPinAllowed(pin)) gpioActiveHigh = activeHigh;
   applyGpio();
   nodeLog.logf(espnet::LOG_INFO, "gpio %s on pin %ld", gpioStateText(), gpioPin);
   // ack so the dashboard shows the achieved state, not just the desired one
@@ -134,7 +136,7 @@ static void ensureRelay() {
   const uint32_t now = millis();
   if (now < nextConnectAttemptMs) return;
   nextConnectAttemptMs = now + connectBackoffMs;
-  if (relay.connectAndSayHello(FW, "esp8266")) {
+  if (relay.connectAndSayHello(FW, ESPNET_CHIP_NAME)) {
     nodeLog.logf(espnet::LOG_INFO, "relay: connected");
     connectBackoffMs = espnet::CONNECT_BACKOFF_MIN_MS;
     lastStatusMs = 0; // send a status right away
@@ -172,7 +174,7 @@ void setup() {
     DEVICE = DEVICE_ID;
   } else {
     char buf[24];
-    snprintf(buf, sizeof(buf), "esp-%08X", (unsigned)ESP.getChipId());
+    snprintf(buf, sizeof(buf), "esp-%08X", (unsigned)espnet::chipId());
     deviceAuto = String(buf);
     DEVICE = deviceAuto.c_str();
   }
@@ -188,7 +190,7 @@ void setup() {
 }
 
 void loop() {
-  ESP.wdtFeed();
+  espnet::feedWdt();
 
   wifiMulti.ensure(); // scan → pick the strongest known network → connect
 

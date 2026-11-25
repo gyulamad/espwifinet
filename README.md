@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/gyulamad/espwifinet/actions/workflows/ci.yml/badge.svg)](https://github.com/gyulamad/espwifinet/actions/workflows/ci.yml)
 
-Base architecture for switching a GPIO leg on a fleet of ESP8266 nodes from
+Base architecture for switching a GPIO leg on a fleet of ESP8266 / ESP32\n(WROOM32) nodes from
 one dashboard toggle — the starting point for later home-automation
 development (project #3 · Home automation, task #33).
 
@@ -15,7 +15,7 @@ development (project #3 · Home automation, task #33).
   strength, Logs, Settings (GPIO pin, reporting cadence, offline window,
   node log level, names, plus the relay's read-only system summary),
   Firmware upload.
-- **Node** (`arduino/ESP8266_Node/`, Arduino sketch): multi-network WiFi
+- **Node** (`arduino/ESP_node/`, Arduino sketch, one source tree for the\n  ESP8266 and the ESP32 / WROOM32 — board.h carries the few board-specific\n  bits): multi-network WiFi
   management that always (re)connects to the strongest known network
   (adapted from espcamsys2's WiFiMulti), outbound relay connection with
   framed-JSON protocol, status reports (SSID, RSSI, heap, uptime), in-band

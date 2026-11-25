@@ -17,7 +17,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
+#include "board.h"
 #include "remote_log.h"
 
 namespace espnet {
@@ -138,7 +138,7 @@ class RelayConnection {
     char msg[192];
     snprintf(msg, sizeof(msg),
              "{\"type\":\"hello\",\"fw\":\"%s\",\"chip\":\"%s\",\"reset\":\"%s\"}",
-             fwVersion, chip, ESP.getResetReason().c_str());
+             fwVersion, chip, espnet::resetReason().c_str());
     sendMessage(*client_, msg);
     lastFromRelayMs_ = millis();
     return true;
