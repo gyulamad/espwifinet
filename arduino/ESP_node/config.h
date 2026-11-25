@@ -7,13 +7,12 @@
 // The node connects OUT to the relay (RELAY_HOST:RELAY_PORT) — it never
 // needs an inbound port on the node side, so it works behind WiFi extenders
 // and NAT routers unchanged (that is the core architecture requirement, see
-// task #33 and espcamsys2's push connection).
+// task #33).
 
 #pragma once
 
 // ── WiFi: the node knows a LIST of networks and (re)connects to the
-// strongest one it can see (task #36, the WiFiMulti pattern from
-// espcamsys2). List every network a node may sit on — different floors,
+// strongest one it can see (task #36, the WiFiMulti pattern). List every network a node may sit on — different floors,
 // rooms or extenders. Leave the SSID empty ("") for unused slots; at least
 // one network must be set.
 #define WIFI_NETWORK_1_SSID  "YOUR-WIFI-NAME"

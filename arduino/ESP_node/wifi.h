@@ -1,5 +1,5 @@
-// wifi.h — multi-network WiFi management for the node (task #36), adapted
-// from espcamsys2's WiFiMulti pattern (ESP32_CAM_Recorder / TFLite sketch):
+// wifi.h — multi-network WiFi management for the node (task #36), the
+// WiFiMulti pattern:
 // instead of one compiled-in SSID the node knows a LIST of networks and
 // always (re)connects to the strongest one it can see. That is what makes
 // moving a node between floors, rooms or extenders a matter of listing the
@@ -17,7 +17,7 @@
 //
 // The choice logic (pickStrongestNetwork) is pure and desktop-tested in
 // tests/cpp/test_net_logic.cpp; the scan/connect driving needs a radio and
-// is hardware-test-only — the same split as espcamsys2's tests.
+// is hardware-test-only.
 
 #pragma once
 

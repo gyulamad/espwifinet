@@ -15,8 +15,8 @@
 //     client that matters (the operator's browser talks to PHP, not to us).
 //
 // Decision logic lives in lib/ as pure functions (unit tested under
-// tests/node/); this file wires it to net/Express/fs. Same split as
-// espcamsys2's relay, kept because it is what makes the relay testable.
+// tests/node/); this file wires it to net/Express/fs — the split is what
+// makes the relay testable.
 
 const net = require('net');
 const express = require('express');
@@ -60,8 +60,7 @@ const FIRMWARE_DIR = envOr(process.env, 'FIRMWARE_DIR', path.join(__dirname, 'fi
 const OFFLINE_AFTER_MS = Number(envOr(process.env, 'OFFLINE_AFTER_MS', baseConfig.offlineAfterMs));
 
 const app = express();
-// Baseline security headers first, so every response carries them (same
-// reasoning as espcamsys2 review NODE-006).
+// Baseline security headers first, so every response carries them.
 app.use((req, res, next) => {
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('Referrer-Policy', 'no-referrer');
@@ -389,7 +388,7 @@ app.post('/api/settings', (req, res) => {
 
 // GET /api/config — the settings page's SYSTEM summary (#36): every relay
 // value that used to live only in config.js, shown without ever sending a
-// secret (only "is it set" booleans — the espcamsys2 rule). Ports and keys
+// secret (only "is it set" booleans). Ports and keys
 // are startup settings read from config.js/env on the Pi: editing them
 // needs a relay restart, so they are displayed read-only instead of edited.
 app.get('/api/config', (req, res) => {
@@ -463,7 +462,7 @@ app.post('/api/firmware', (req, res) => {
 // with its chip (board.h's ESPNET_CHIP_NAME rides in the query) and
 // downloads its own image path (board.h's ESPNET_FIRMWARE_PATH).
 // These are unauthenticated but read-only and useless without network access
-// to the relay; espcamsys2 serves them the same way.
+// to the relay.
 app.get('/firmware/version', (req, res) => {
   const chip = String(req.query.chip || 'esp8266');
   if (!firmware.isKnownChip(chip)) {

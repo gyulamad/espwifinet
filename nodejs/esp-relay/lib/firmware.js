@@ -7,7 +7,7 @@
 // plausible firmware image, which version is newer, what does the version
 // endpoint reply); server.js owns the HTTP wiring.
 //
-// The version reply shape matches espcamsys2's: "<version>\n<md5>\n" — the
+// The version reply shape is "<version>\n<md5>\n" — the
 // md5 lets the node (and the operator) check the download without trusting
 // HTTP headers.
 

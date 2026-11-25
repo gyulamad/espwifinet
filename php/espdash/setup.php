@@ -1,11 +1,11 @@
 <?php
-// setup.php — the INITIAL SETUP PAGE (task #36), adapted from espcamsys2's
-// safe-credentials bootstrap. A fresh install lands here instead of a raw
+// setup.php — the INITIAL SETUP PAGE (task #36), the safe-credentials
+// bootstrap. A fresh install lands here instead of a raw
 // "config.php is missing" error: it walks the operator through the relay
 // address, the relay key and the first dashboard login, checks the relay
 // really answers with the given key, and then writes config.php itself.
 //
-// What it borrows from espcamsys2 (php/cameras/auth.php + config_file.php):
+// Its rules:
 //   - unsafe values are refused, never stored: empty username, a password
 //     shorter than 8 characters, the template's CHANGE-ME keys;
 //   - config.php is written ATOMICALLY (temp file + rename, no .bak ever
@@ -96,7 +96,7 @@ function dash_probe_relay(string $url, string $key): array
 }
 
 // Atomic config write: temp file in the same folder, fsync-ed, renamed. No
-// .bak copy is ever left in the web folder (the espcamsys2 rule).
+// .bak copy is ever left in the web folder.
 function dash_write_config(string $dir, array $config): array
 {
     $file = $dir . '/config.php';
@@ -145,7 +145,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     $password = (string)($_POST['password'] ?? '');
     $confirm = (string)($_POST['password_confirm'] ?? '');
 
-    // the espcamsys2 credential rules, carried over
+    // the credential rules
     if (!preg_match('#^https?://[A-Za-z0-9._~:/\[\]@!$&\'()*+,;=%-]+$#', $relayUrl)) {
         $errors[] = 'relay_url must look like http://127.0.0.1:8080 (no trailing slash).';
     }

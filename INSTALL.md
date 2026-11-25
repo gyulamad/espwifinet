@@ -1,7 +1,7 @@
 # ESP Wifi Network — base project
 
 A small, extensible base for switching GPIOs on ESP boards from a
-dashboard, following the architecture of `gyulamad/espcamsys2`:
+dashboard:
 
 ```
  browser ──► PHP dashboard (Apache/PHP on the Pi)
@@ -17,7 +17,7 @@ dashboard, following the architecture of `gyulamad/espcamsys2`:
 ```
 
 Each ESP node keeps **one outbound TCP connection** to the relay. That is
-the key architectural decision (taken from espcamsys2's push connection):
+the key architectural decision (the push connection):
 the node dials the relay, so nodes work unchanged behind WiFi extenders and
 NAT routers, and the same established connection carries the relay's
 commands back down (GPIO toggle, settings, OTA trigger).
@@ -98,7 +98,7 @@ sudo cp -r php/espdash /var/www/html/espdash
 ```
 
 Then open `http://<pi-ip>/espdash/setup.php` — the **initial setup page**
-(#36, adapted from espcamsys2's safe-credentials bootstrap). It asks for the
+(#36, the safe-credentials bootstrap). It asks for the
 relay URL, the relay key (checked against the live relay before anything is
 saved) and the first dashboard login, and writes `config.php` for you. The
 page refuses unsafe values (short passwords, the example `CHANGE-ME` keys)
@@ -141,8 +141,7 @@ In the Arduino IDE (or arduino-cli):
    dashboard's Logs page.
 
 **Multi-wifi (#36):** the node knows a LIST of networks and always
-(re)connects to the strongest one it can see — the WiFiMulti pattern of
-espcamsys2. List every network a node may sit on (different floors, rooms
+(re)connects to the strongest one it can see — the WiFiMulti pattern. List every network a node may sit on (different floors, rooms
 or extenders) in `config.h`:
 
 ```c
@@ -240,4 +239,4 @@ settings page warns about them.
   with the relay, message dispatch (incl. the pushed log level), repeat
   suppression, the log-level queue filter, strongest-network picking and
   the scan → connect → roam cycle. The radio/flash paths still need real
-  hardware, as in espcamsys2.
+  hardware.

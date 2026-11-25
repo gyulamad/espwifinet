@@ -6,7 +6,7 @@ const assert = require('assert');
 const d = require('../lib/devices');
 
 function run() {
-  // connection classification (same rules as espcamsys2)
+  // connection classification rules
   assert.strictEqual(d.isConnectionConflict(500), true); // still talking: two senders
   assert.strictEqual(d.isConnectionConflict(5000), false); // silent: a reconnect
 

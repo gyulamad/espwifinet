@@ -7,7 +7,7 @@
 // offlineAfterMs (its status messages come every statusIntervalMs; a node that
 // went silent without closing the socket — weak WiFi, half-open NAT mapping —
 // must not be shown as online forever). Two connections claiming the same
-// deviceId are resolved the way espcamsys2 does it: the newer one wins, the
+// deviceId are resolved the same way every time: the newer one wins, the
 // older one is classified 'stale' (silent past the live window: the same board
 // reconnecting) or 'conflict' (still talking: two boards share one id — both
 // are closed and the id must be fixed by the operator).

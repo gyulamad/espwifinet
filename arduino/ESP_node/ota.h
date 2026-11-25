@@ -1,5 +1,5 @@
-// ota.h — the node half of over-the-air firmware updates, following the same
-// split as espcamsys2's ota.h: check the relay's version endpoint, download
+// ota.h — the node half of over-the-air firmware updates: check the relay's
+// version endpoint, download
 // the image when it differs from FW_VERSION, flash it with Update, restart.
 //
 //   GET  http://<relay>:<port>/firmware/version  ->  "<version>\n<md5>\n"

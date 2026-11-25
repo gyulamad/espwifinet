@@ -19,7 +19,7 @@ development (project #3 · Home automation, task #33).
   ESP8266 and the ESP32 / WROOM32 — board.h carries the few board-specific
   bits): multi-network WiFi
   management that always (re)connects to the strongest known network
-  (adapted from espcamsys2's WiFiMulti), outbound relay connection with
+  (the WiFiMulti pattern), outbound relay connection with
   framed-JSON protocol, status reports (SSID, RSSI, heap, uptime), in-band
   remote logging with repeat suppression and a settings-driven level
   filter, OTA self-update, settings-driven GPIO.
@@ -29,8 +29,7 @@ development (project #3 · Home automation, task #33).
 Design decisions worth knowing (each documented in the code):
 
 - The wire protocol is `[4-byte BE length][JSON]` after a one-time
-  `<deviceId>\t<apiKey>\n` auth line — the same shape as espcamsys2, so the
-  patterns (and debugging habits) carry over.
+  `<deviceId>\t<apiKey>\n` auth line.
 - Commands travel **down the node's own outbound connection**; nodes that
   were offline during a toggle catch up on reconnect because the relay
   re-sends the persisted desired state on every connect.

@@ -3,8 +3,7 @@
 // (in-band over the same TCP connection the node already keeps open — see
 // net.h) and echoed to Serial while it is still connected by USB.
 //
-// The same ideas as espcamsys2's remote_log.h, scaled down for a base
-// project: a bounded ring buffer (nothing is lost just because the link is
+// The design: a bounded ring buffer (nothing is lost just because the link is
 // down — the oldest entries go first when it overflows), repeat suppression
 // for spammy messages, and delivery only while the relay connection is up.
 // It is deliberately dependency-free and single-threaded: called from loop().

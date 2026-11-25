@@ -2,8 +2,8 @@
 
 // protocol.js — pure parsing/building for the node push connection's wire
 // protocol, so the framing rules can be unit tested with hand-built buffers
-// instead of a live TCP connection (same split as espcamsys2's protocol.js:
-// server.js owns sockets, this file owns the rules).
+// instead of a live TCP connection (server.js owns sockets, this file owns
+// the rules).
 //
 // Wire protocol (both directions, one TCP connection per node):
 //   1. one line, sent by the node right after connect:

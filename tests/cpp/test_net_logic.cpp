@@ -3,7 +3,7 @@
 // that run identical on hardware: the flat-JSON readers, the wire framing
 // (bytes identical to nodejs/esp-relay/lib/protocol.js), message dispatch
 // into the hooks, and the log queue. The radio/flash paths remain
-// hardware-test-only — the same split as espcamsys2's tests/cpp.
+// hardware-test-only.
 
 #include <cassert>
 #include <cstdio>
