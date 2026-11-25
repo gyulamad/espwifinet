@@ -382,9 +382,13 @@ class ArduinoSetupNet : public ISetupNet {
 // decision, made from the credential lists.
 class SetupPortal {
  public:
-  void begin(WifiStore& store) {
+  // The relay store (#140): the form prefills and rewrites the relay
+  // configuration together with the WiFi list.
+  void begin(WifiStore& store, RelayConfigStore& relayStore) {
     store_ = &store;
+    relayStore_ = &relayStore;
     storedCount_ = store.load(stored_, WIFI_STORE_MAX_NETS);
+    relayStore.load(relayCur_);  // false = factory: the form asks for everything
     setupSsid(chipId(), ssid_);
     stop();
   }
@@ -394,7 +398,7 @@ class SetupPortal {
   void start(uint32_t serveCapMs) {
     stop();
     const std::string token = csrfTokenFromRandom(espRandom(), espRandom(), espRandom(), espRandom());
-    form_.reset(new SetupForm(ssid_, *store_, stored_, storedCount_, token));
+    form_.reset(new SetupForm(ssid_, *store_, stored_, storedCount_, *relayStore_, relayCur_, token));
     net_.reset(new ArduinoSetupNet(*form_));
     SetupSessionConfig cfg;
     cfg.ssid = ssid_;
@@ -426,6 +430,8 @@ class SetupPortal {
 
  private:
   WifiStore* store_ = nullptr;
+  RelayConfigStore* relayStore_ = nullptr;
+  RelayConfig relayCur_;
   WifiStoreNet stored_[WIFI_STORE_MAX_NETS];
   int storedCount_ = 0;
   std::string ssid_;

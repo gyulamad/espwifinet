@@ -263,6 +263,127 @@ class WifiStore {
   bool armed_ = false;
 };
 
+// ── The node's relay configuration (task #140) ──────────────────────────
+// The relay's address and the fleet's shared secret are stored in flash
+// exactly like the WiFi list: the setup page writes them, the sketch reads
+// them at boot, and NOTHING has to be compiled in. That is what removes
+// config.h from the end-user path entirely: a flashed binary plus one
+// visit to the setup page is a complete install (no IDE, no source).
+struct RelayConfig {
+  std::string host;   // the relay's IP or hostname: 1..64 bytes, no spaces
+  int port = 7777;    // 1..65535 (the blank field on the form means 7777)
+  std::string key;    // the fleet's nodeKey: 1..64 printable bytes
+};
+
+// The relay-configuration region shares the EEPROM space with the WiFi
+// store: it starts at RELAY_CONFIG_BASE, right after the 3000-byte WiFi
+// region, inside the same 4096-byte sector. The hardware backend maps the
+// offset (wifi_store_hw.h); the pure store only ever sees its own buffer.
+// Worst case content is ~135 bytes, so 1096 bytes is plenty.
+static const size_t RELAY_CONFIG_BASE = 3000;
+static const size_t RELAY_CONFIG_REGION_MAX = 1096;  // 4096 - 3000
+
+inline bool validRelayHost(const std::string& s) {
+  if (s.empty() || s.size() > 64) return false;
+  if (!isPrintableAsciiText(s)) return false;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == ' ') return false;  // hostnames and IP addresses have no spaces
+  }
+  return true;
+}
+
+inline bool validRelayKey(const std::string& s) {
+  return !s.empty() && s.size() <= 64 && isPrintableAsciiText(s);
+}
+
+// Blob format (its own region, versioned):
+//   "ENRC" | set (1 byte, 1 = configured) | length (2 bytes, big endian) |
+//   host '\t' port '\t' key
+// A blank or damaged region reads as "not configured" — which means the
+// setup WiFi opens: without a relay to report to the node has no job.
+class RelayConfigStore {
+ public:
+  void begin(WifiStoreBackend* backend) { backend_ = backend; }
+
+  // true + `out` when a valid configuration is stored; false when the
+  // region is blank, cleared or damaged (the boot decision opens the
+  // setup WiFi in every one of those cases).
+  bool load(RelayConfig& out) {
+    out = RelayConfig();
+    if (backend_ == nullptr) return false;
+    char buf[RELAY_CONFIG_REGION_MAX];
+    if (!backend_->read(buf, sizeof(buf))) return false;
+    size_t len = 0;
+    bool set = false;
+    if (!relayRegionBlob(buf, sizeof(buf), len, set)) return false;
+    const std::string blob(buf + 7, len);
+    const size_t t1 = blob.find('\t');
+    if (t1 == std::string::npos) return false;
+    const size_t t2 = blob.find('\t', t1 + 1);
+    if (t2 == std::string::npos) return false;
+    RelayConfig cfg;
+    cfg.host = blob.substr(0, t1);
+    const std::string port = blob.substr(t1 + 1, t2 - t1 - 1);
+    cfg.key = blob.substr(t2 + 1);
+    long p = 0;
+    if (port.empty()) return false;
+    for (size_t i = 0; i < port.size(); ++i) {
+      if (port[i] < '0' || port[i] > '9') return false;
+      p = p * 10 + (port[i] - '0');
+      if (p > 65535) return false;
+    }
+    if (!validRelayHost(cfg.host) || !validRelayKey(cfg.key) || p < 1) return false;
+    cfg.port = static_cast<int>(p);
+    out = cfg;
+    return set;
+  }
+
+  // Validates BEFORE anything is written (all-or-nothing, like the WiFi
+  // store): a half-written relay configuration must never exist.
+  bool save(const RelayConfig& cfg) {
+    if (backend_ == nullptr) return false;
+    if (!validRelayHost(cfg.host) || !validRelayKey(cfg.key) ||
+        cfg.port < 1 || cfg.port > 65535) return false;
+    std::string payload = cfg.host;
+    payload += '\t';
+    payload += std::to_string(static_cast<long long>(cfg.port));
+    payload += '\t';
+    payload += cfg.key;
+    char buf[RELAY_CONFIG_REGION_MAX];
+    if (payload.size() + 7 > sizeof(buf)) return false;
+    buf[0] = 'E';
+    buf[1] = 'N';
+    buf[2] = 'R';
+    buf[3] = 'C';
+    buf[4] = static_cast<char>(0x01);
+    buf[5] = static_cast<char>((payload.size() >> 8) & 0xff);
+    buf[6] = static_cast<char>(payload.size() & 0xff);
+    for (size_t i = 0; i < payload.size(); ++i) buf[7 + i] = payload[i];
+    return backend_->write(buf, payload.size() + 7);
+  }
+
+  // Marks the region blank (the next boot opens the setup WiFi).
+  bool clear() {
+    if (backend_ == nullptr) return false;
+    char buf[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    return backend_->write(buf, sizeof(buf));
+  }
+
+ private:
+  // "ENRC" + a length that fits what is left, else false.
+  static bool relayRegionBlob(const char* buf, size_t bufSize, size_t& len, bool& set) {
+    if (bufSize < 7) return false;
+    if (buf[0] != 'E' || buf[1] != 'N' || buf[2] != 'R' || buf[3] != 'C') return false;
+    set = static_cast<unsigned char>(buf[4]) != 0;
+    const unsigned hi = static_cast<unsigned char>(buf[5]);
+    const unsigned lo = static_cast<unsigned char>(buf[6]);
+    len = static_cast<size_t>((hi << 8) | lo);
+    return len != 0 && 7 + len <= bufSize;
+  }
+
+  WifiStoreBackend* backend_ = nullptr;
+};
+
 inline int wifiStoreSerialize(const WifiStoreNet* nets, int count, char* out, size_t outMax) {
   if (count < 0 || (nets == nullptr && count != 0)) return -1;
   std::string blob;

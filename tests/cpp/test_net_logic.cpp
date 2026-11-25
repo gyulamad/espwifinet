@@ -502,6 +502,56 @@ static void testWifiStore() {
   }
 }
 
+// ── task #140: the relay configuration store ──
+static void testRelayConfigStore() {
+  RamStoreBackend backend;
+  espnet::RelayConfigStore store;
+  store.begin(&backend);
+
+  // factory: blank region reads as "not configured"
+  espnet::RelayConfig cfg;
+  assert(!store.load(cfg));
+
+  // a valid save round-trips (host, port, key) and reads back set
+  cfg.host = "192.168.1.10";
+  cfg.port = 7777;
+  cfg.key = "fleet-key-123";
+  assert(store.save(cfg));
+  espnet::RelayConfig back;
+  assert(store.load(back));
+  assert(back.host == "192.168.1.10" && back.port == 7777 && back.key == "fleet-key-123");
+
+  // validation refuses BEFORE any write (all-or-nothing)
+  espnet::RelayConfig bad = cfg;
+  bad.host = "";
+  assert(!store.save(bad));
+  bad.host = "192.168.1.10";
+  bad.port = 0;
+  assert(!store.save(bad));
+  bad.port = 7777;
+  bad.key = "with\ttab";  // a tab would break the payload framing
+  assert(!store.save(bad));
+  back = espnet::RelayConfig();
+  assert(store.load(back) && back.key == "fleet-key-123"); // nothing changed
+
+  // damaged region reads as "not configured" (which means: the portal)
+  std::string damaged = "ENRC";
+  damaged += static_cast<char>(0x01);
+  damaged += static_cast<char>(0x00);
+  damaged += static_cast<char>(0x30);
+  damaged += std::string("192.168.1.10\tnot-a-number\tfleet-key-123");
+  RamStoreBackend dBackend;
+  espnet::RelayConfigStore dStore;
+  dStore.begin(&dBackend);
+  dBackend.data_ = damaged;
+  dBackend.blank_ = false;
+  assert(!dStore.load(back));
+
+  // clear() blanks the region: the next boot opens the setup WiFi
+  assert(store.clear());
+  assert(!store.load(back));
+}
+
 // ── task #135 v2: the life-cycle flags and the v1 migration ──
 static void testWifiStoreV2() {
   using espnet::WifiStoreNet;
@@ -611,12 +661,16 @@ static void testSetupDecisions() {
   // provisioned always opens it (factory, or saved-but-never-connected);
   // a provisioned node NEVER opens it on its own (an outage just retries)
   using espnet::PortalDecision;
-  assert(espnet::bootPortalDecision(true, false, 3) == PortalDecision::Portal);
-  assert(espnet::bootPortalDecision(true, true, 3) == PortalDecision::Portal);
-  assert(espnet::bootPortalDecision(false, false, 0) == PortalDecision::Portal);
-  assert(espnet::bootPortalDecision(false, false, 2) == PortalDecision::Portal);
-  assert(espnet::bootPortalDecision(false, true, 2) == PortalDecision::Normal);
-  assert(espnet::bootPortalDecision(false, true, 0) == PortalDecision::Portal); // defensive
+  assert(espnet::bootPortalDecision(true, false, 3, false) == PortalDecision::Portal);
+  assert(espnet::bootPortalDecision(true, true, 3, true) == PortalDecision::Portal);
+  assert(espnet::bootPortalDecision(false, false, 0, false) == PortalDecision::Portal);
+  assert(espnet::bootPortalDecision(false, false, 2, false) == PortalDecision::Portal);
+  // #140: a provisioned node WITHOUT a relay configuration still opens the
+  // portal once — that is the migration path of a v2 node whose relay
+  // settings were compiled in until now
+  assert(espnet::bootPortalDecision(false, true, 2, false) == PortalDecision::Portal);
+  assert(espnet::bootPortalDecision(false, true, 2, true) == PortalDecision::Normal);
+  assert(espnet::bootPortalDecision(false, true, 0, true) == PortalDecision::Portal); // defensive
 }
 
 // ── task #135: the setup form (SetupForm) ──
@@ -624,7 +678,11 @@ static void testSetupDecisions() {
 static const char* const kToken = "0123456789abcdef0123456789abcdef"; // 32 hex, >= WIFI_SETUP_MIN_TOKEN
 
 static std::string saveBody(const std::string& rowFields) {
-  return std::string("csrf=") + kToken + "&" + rowFields;
+  // #140: every successful save carries the relay fields too (the node
+  // cannot report anywhere without them) - valid values, so tests that
+  // expect a WiFi-side refusal still see exactly that error.
+  return std::string("csrf=") + kToken + "&" + rowFields +
+         "&r.host=192.168.1.10&r.port=7777&r.key=fleet-key-123";
 }
 
 static void testSetupForm() {
@@ -632,7 +690,8 @@ static void testSetupForm() {
   espnet::WifiStore store;
   store.begin(&backend);
   espnet::WifiStoreNet stored[espnet::WIFI_STORE_MAX_NETS];
-  espnet::SetupForm form("espnode-setup-aabbcc", store, stored, 0, kToken);
+  RamStoreBackend rbe_form; espnet::RelayConfigStore rs_form; rs_form.begin(&rbe_form);
+  espnet::SetupForm form("espnode-setup-aabbcc", store, stored, 0, rs_form, espnet::RelayConfig(), kToken);;
 
   // first visit: the page carries the token, the empty rows, no script
   espnet::HttpReply page = form.handle("GET", "/", "");
@@ -645,6 +704,10 @@ static void testSetupForm() {
   assert(page.body.find("id=\"addrow\"") != std::string::npos);
   assert(page.body.find("class=\"rm\"") != std::string::npos);
   assert(page.body.find("<noscript>") != std::string::npos); // the no-JS fallback rows
+  // #140: the relay section is on the page; the key is never echoed
+  assert(page.body.find("Relay (the Pi this node reports to)") != std::string::npos);
+  assert(page.body.find("name=\"r.host\"") != std::string::npos);
+  assert(page.body.find("name=\"r.key\"") != std::string::npos);
   assert(page.body.find("onclick=") == std::string::npos);
   assert(page.body.find("<script>") == std::string::npos);   // nothing inline
   bool hasCsp = false;
@@ -677,13 +740,25 @@ static void testSetupForm() {
   assert(r.status == 403); // wrong token
   assert(backend.blank_);  // nothing was stored by the refused posts
 
-  // a valid save: all-or-nothing, the store is written, the node restarts
+  // #140: a save without the relay fields is refused - the node would have
+  // nowhere to report - and nothing is stored (all-or-nothing across both
+  // flash regions)
+  r = form.handle("POST", "/save", std::string("csrf=") + kToken + "&w.ssid.1=Home&w.pass.1=abcdefgh");
+  assert(r.status == 422);
+  assert(r.body.find("Relay address") != std::string::npos);
+  assert(backend.blank_);
+
+  // a valid save: all-or-nothing, BOTH stores are written, the node restarts
   r = form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=abcdefgh"));
   assert(r.status == 200);
   assert(r.body.find("restarting") != std::string::npos);
   assert(form.saved());
   assert(store.load(stored, espnet::WIFI_STORE_MAX_NETS) == 1);
   assert(stored[0].ssid == "Home" && stored[0].pass == "abcdefgh");
+  espnet::RelayConfig savedRelay;
+  assert(rs_form.load(savedRelay)); // the relay configuration landed too
+  assert(savedRelay.host == "192.168.1.10" && savedRelay.port == 7777);
+  assert(savedRelay.key == "fleet-key-123");
 
   // after the save the session is done: further posts are refused, the page
   // turns into the restarting notice
@@ -695,7 +770,8 @@ static void testSetupForm() {
   RamStoreBackend backend2;
   espnet::WifiStore store2;
   store2.begin(&backend2);
-  espnet::SetupForm form2("espnode-setup-ddeeff", store2, stored, 0, kToken);
+  RamStoreBackend rbe_form2; espnet::RelayConfigStore rs_form2; rs_form2.begin(&rbe_form2);
+  espnet::SetupForm form2("espnode-setup-ddeeff", store2, stored, 0, rs_form2, espnet::RelayConfig(), kToken);;
 
   // a name without a password is refused, nothing stored, input brought back
   r = form2.handle("POST", "/save", saveBody("w.ssid.1=Home"));
@@ -729,7 +805,8 @@ static void testSetupForm() {
   existing[0].ssid = "Home";
   existing[0].pass = "secret12";
   assert(store3.save(existing, 1));
-  espnet::SetupForm form3("espnode-setup-112233", store3, existing, 1, kToken);
+  RamStoreBackend rbe_form3; espnet::RelayConfigStore rs_form3; rs_form3.begin(&rbe_form3);
+  espnet::SetupForm form3("espnode-setup-112233", store3, existing, 1, rs_form3, espnet::RelayConfig(), kToken);;
   espnet::HttpReply page3 = form3.handle("GET", "/", "");
   assert(page3.body.find("value=\"Home\"") != std::string::npos);
   assert(page3.body.find("blank keeps it") != std::string::npos);
@@ -747,13 +824,15 @@ static void testSetupForm() {
   evil[0].ssid = "<img src=x>";
   evil[0].pass = "";
   assert(store4.save(evil, 1));
-  espnet::SetupForm form4("espnode-setup-445566", store4, evil, 1, kToken);
+  RamStoreBackend rbe_form4; espnet::RelayConfigStore rs_form4; rs_form4.begin(&rbe_form4);
+  espnet::SetupForm form4("espnode-setup-445566", store4, evil, 1, rs_form4, espnet::RelayConfig(), kToken);;
   espnet::HttpReply page4 = form4.handle("GET", "/", "");
   assert(page4.body.find("<img") == std::string::npos);
   assert(page4.body.find("&lt;img") != std::string::npos);
 
   // strict parsing and the caps
-  espnet::SetupForm form5("espnode-setup-aabbcc", store, stored, 0, kToken);
+  RamStoreBackend rbe_form5; espnet::RelayConfigStore rs_form5; rs_form5.begin(&rbe_form5);
+  espnet::SetupForm form5("espnode-setup-aabbcc", store, stored, 0, rs_form5, espnet::RelayConfig(), kToken);;
   assert(form5.handle("POST", "/save", saveBody("csrf=" + std::string(kToken) + "&csrf=" + kToken)).status == 400); // name twice
   assert(form5.handle("POST", "/save", saveBody("w.ssid.1")).status == 400); // piece without '='
   assert(form5.handle("POST", "/save", saveBody("bad name%3D1=2")).status == 400); // space in the name
@@ -790,7 +869,8 @@ static void testSetupForm() {
   seed[0].pass = "oldpass1";
   assert(armedStore.save(seed, 1));
   assert(armedStore.armSetup(true));
-  espnet::SetupForm armedForm("espnode-setup-aabbcc", armedStore, seed, 1, kToken);
+  RamStoreBackend rbe_armedForm; espnet::RelayConfigStore rs_armedForm; rs_armedForm.begin(&rbe_armedForm);
+  espnet::SetupForm armedForm("espnode-setup-aabbcc", armedStore, seed, 1, rs_armedForm, espnet::RelayConfig(), kToken);;
   assert(armedForm.handle("POST", "/save", saveBody("w.ssid.1=New&w.pass.1=newpass1")).status == 200);
   assert(!armedStore.setupArmed());
   assert(armedStore.load(stored, espnet::WIFI_STORE_MAX_NETS) == 1);
@@ -802,14 +882,15 @@ static void testSetupForm() {
   espnet::WifiStore capStore;
   capStore.begin(&capBackend);
   espnet::WifiStoreNet none[1];
-  espnet::SetupForm capForm("espnode-setup-aabbcc", capStore, none, 0, kToken);
+  RamStoreBackend rbe_capForm; espnet::RelayConfigStore rs_capForm; rs_capForm.begin(&rbe_capForm);
+  espnet::SetupForm capForm("espnode-setup-aabbcc", capStore, none, 0, rs_capForm, espnet::RelayConfig(), kToken);;
   std::string body30;
   for (int i = 1; i <= espnet::WIFI_STORE_MAX_NETS; ++i) {
     body30 += "w.ssid." + std::to_string(static_cast<long long>(i)) + "=net" +
               std::to_string(static_cast<long long>(i)) + "&w.pass." +
               std::to_string(static_cast<long long>(i)) + "=abcdefgh" + (i < espnet::WIFI_STORE_MAX_NETS ? "&" : "");
   }
-  espnet::HttpReply capOk = capForm.handle("POST", "/save", "csrf=" + std::string(kToken) + "&" + body30);
+  espnet::HttpReply capOk = capForm.handle("POST", "/save", saveBody(body30));
   assert(capOk.status == 200);
   assert(capStore.load(stored, espnet::WIFI_STORE_MAX_NETS) == espnet::WIFI_STORE_MAX_NETS);
 
@@ -817,9 +898,9 @@ static void testSetupForm() {
   RamStoreBackend capBackend2;
   espnet::WifiStore capStore2;
   capStore2.begin(&capBackend2);
-  espnet::SetupForm capForm2("espnode-setup-aabbcc", capStore2, none, 0, kToken);
-  std::string body31 = "csrf=" + std::string(kToken) + "&" + body30 +
-                       "&w.ssid.31=extra&w.pass.31=abcdefgh";
+  RamStoreBackend rbe_capForm2; espnet::RelayConfigStore rs_capForm2; rs_capForm2.begin(&rbe_capForm2);
+  espnet::SetupForm capForm2("espnode-setup-aabbcc", capStore2, none, 0, rs_capForm2, espnet::RelayConfig(), kToken);;
+  std::string body31 = saveBody(body30) + "&w.ssid.31=extra&w.pass.31=abcdefgh";
   espnet::HttpReply capRefused = capForm2.handle("POST", "/save", body31);
   assert(capRefused.status == 422); // the refused save re-renders the form with the errors
   assert(capRefused.body.find("up to 30 WiFi networks") != std::string::npos);
@@ -863,7 +944,8 @@ static void testSetupSession() {
   espnet::WifiStore store;
   store.begin(&backend);
   espnet::WifiStoreNet none[1];
-  espnet::SetupForm form("espnode-setup-aabbcc", store, none, 0, kToken);
+  RamStoreBackend rbe_form; espnet::RelayConfigStore rs_form; rs_form.begin(&rbe_form);
+  espnet::SetupForm form("espnode-setup-aabbcc", store, none, 0, rs_form, espnet::RelayConfig(), kToken);;
   FakeNet net;
   FakeLog log;
 
@@ -908,7 +990,8 @@ static void testSetupSession() {
   RamStoreBackend backend2;
   espnet::WifiStore store2;
   store2.begin(&backend2);
-  espnet::SetupForm form2("espnode-setup-ddeeff", store2, none, 0, kToken);
+  RamStoreBackend rbe_form2; espnet::RelayConfigStore rs_form2; rs_form2.begin(&rbe_form2);
+  espnet::SetupForm form2("espnode-setup-ddeeff", store2, none, 0, rs_form2, espnet::RelayConfig(), kToken);;
   FakeNet net2;
   net2.failNext_ = 2;
   SetupSessionConfig cfg2 = cfg;
@@ -925,7 +1008,8 @@ static void testSetupSession() {
   RamStoreBackend backend3;
   espnet::WifiStore store3;
   store3.begin(&backend3);
-  espnet::SetupForm form3("espnode-setup-112233", store3, none, 0, kToken);
+  RamStoreBackend rbe_form3; espnet::RelayConfigStore rs_form3; rs_form3.begin(&rbe_form3);
+  espnet::SetupForm form3("espnode-setup-112233", store3, none, 0, rs_form3, espnet::RelayConfig(), kToken);;
   FakeNet net3;
   SetupSessionConfig cfg3 = cfg;
   cfg3.serveCapMs = 60000;
@@ -1064,6 +1148,8 @@ int main() {
   printf("PASS wifi store\n");
   testWifiStoreV2();
   printf("PASS wifi store v2 flags\n");
+  testRelayConfigStore();
+  printf("PASS relay config store\n");
   testSetupDecisions();
   printf("PASS setup decisions\n");
   testSetupForm();

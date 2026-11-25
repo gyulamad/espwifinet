@@ -446,6 +446,49 @@ inline void buildStoreRows(const std::vector<FormField>& fields, const WifiStore
   }
 }
 
+// The submitted relay fields -> a validated relay configuration (#140).
+// The key follows the password rule: never echoed, a blank field keeps the
+// stored one, a brand-new node needs it typed. A blank port means 7777.
+// Returns false when `errors` gained entries; `out` is the best candidate
+// either way (so a re-render can bring the typed host/port back).
+inline bool buildRelayConfig(const std::vector<FormField>& fields, const RelayConfig& current,
+                             RelayConfig& out, std::vector<std::string>& errors) {
+  const std::string* host = findField(fields, "r.host");
+  const std::string* port = findField(fields, "r.port");
+  const std::string* key = findField(fields, "r.key");
+  RelayConfig cfg;
+  cfg.host = host ? *host : "";
+  cfg.port = current.port;
+  cfg.key = key && !key->empty() ? *key : current.key;
+  bool ok = true;
+  if (!validRelayHost(cfg.host)) {
+    errors.push_back("Relay address: type the Pi's IP or hostname (1..64 characters, no spaces)");
+    ok = false;
+  }
+  if (port != nullptr && !port->empty()) {
+    long p = 0;
+    bool digits = true;
+    for (size_t i = 0; i < port->size(); ++i) {
+      if ((*port)[i] < '0' || (*port)[i] > '9') { digits = false; break; }
+      p = p * 10 + ((*port)[i] - '0');
+      if (p > 65535) break;
+    }
+    if (!digits || p < 1 || p > 65535) {
+      errors.push_back("Relay port: 1..65535 (blank means 7777)");
+      ok = false;
+    } else {
+      cfg.port = static_cast<int>(p);
+    }
+  }
+  if (!validRelayKey(cfg.key)) {
+    errors.push_back(std::string("Relay key: type the relay's nodeKey") +
+                     (current.key.empty() ? " (1..64 characters)" : " again, or leave the box blank to keep the stored one"));
+    ok = false;
+  }
+  out = cfg;
+  return ok;
+}
+
 // ── Rendering ───────────────────────────────────────────────────────────
 
 // One .net row of the setup form: name + password + "open network" + the
@@ -472,7 +515,9 @@ inline std::string netRowHtml(int index, const std::string& ssid, bool hasPasswo
 // is kept when the box is blank.
 inline std::string renderForm(const std::string& title, const WifiStoreNet* stored, int storedCount,
                               const std::string& csrfToken, const std::vector<FormField>& submitted,
-                              const std::vector<std::string>& errors) {
+                              const std::vector<std::string>& errors,
+                              const RelayConfig& relayPrefill, bool relayHasKey,
+                              const std::string& relayHostBack, const std::string& relayPortBack) {
   // which rows to bring back: what the user submitted, else what is stored
   WifiStoreNet rows[WIFI_STORE_MAX_NETS];
   bool openRows[WIFI_STORE_MAX_NETS] = {false};
@@ -531,6 +576,22 @@ inline std::string renderForm(const std::string& title, const WifiStoreNet* stor
   h += "</noscript>";
   h += "<div id=\"addwrap\"><button type=\"button\" id=\"addrow\">Add another network</button></div>";
   h += "</fieldset>";
+  // #140: the relay section — the node cannot do its job without it, so it
+  // is part of the same all-or-nothing save. The key is never echoed; a
+  // blank field keeps the stored one. The host/port come back typed after
+  // a rejected save, like the WiFi names do.
+  h += "<fieldset><legend>Relay (the Pi this node reports to)</legend>";
+  const std::string hostShown = relayHostBack.empty() ? relayPrefill.host : relayHostBack;
+  const std::string portShown = relayPortBack.empty()
+      ? (relayPrefill.port == 7777 ? std::string() : std::to_string(static_cast<long long>(relayPrefill.port)))
+      : relayPortBack;
+  h += "<input type=\"text\" name=\"r.host\" maxlength=\"64\" value=\"" + htmlEscape(hostShown) +
+       "\" placeholder=\"relay IP or hostname\" autocapitalize=\"off\" autocomplete=\"off\" spellcheck=\"false\">"
+       "<input type=\"text\" name=\"r.port\" maxlength=\"5\" inputmode=\"numeric\" value=\"" + htmlEscape(portShown) +
+       "\" placeholder=\"port (7777 if left blank)\">"
+       "<input type=\"password\" name=\"r.key\" autocomplete=\"new-password\" placeholder=\"" +
+       std::string(relayHasKey ? "key set - blank keeps it" : "the relay's nodeKey") + "\">";
+  h += "</fieldset>";
   h += "<button type=\"submit\">Save and restart</button></form>";
   h += "<script src=\"/setup.js\"></script>";
   return h;
@@ -546,8 +607,10 @@ class SetupForm {
   // rows; both come from the same WifiStore, so a save is what the next
   // render would show.
   SetupForm(const std::string& title, WifiStore& store, const WifiStoreNet* stored, int storedCount,
+            RelayConfigStore& relayStore, const RelayConfig& relayCurrent,
             const std::string& csrfToken)
-      : title_(title), store_(store), token_(csrfToken), saved_(false) {
+      : title_(title), store_(store), relayStore_(relayStore), relayCur_(relayCurrent),
+        token_(csrfToken), saved_(false) {
     for (int i = 0; i < storedCount && i < WIFI_STORE_MAX_NETS; ++i) stored_[i] = stored[i];
     storedCount_ = storedCount < WIFI_STORE_MAX_NETS ? storedCount : WIFI_STORE_MAX_NETS;
   }
@@ -587,7 +650,8 @@ class SetupForm {
   HttpReply formPage() {
     if (saved()) return restartingPage("Saved");
     return htmlPage(200, "Setup", renderForm(title_, stored_, storedCount_, token_,
-                                             std::vector<FormField>(), std::vector<std::string>()));
+                                             std::vector<FormField>(), std::vector<std::string>(),
+                                             relayCur_, !relayCur_.key.empty(), std::string(), std::string()));
   }
 
   // The checks every POST starts with. true: `fields` is the parsed form and
@@ -607,7 +671,12 @@ class SetupForm {
   }
 
   HttpReply rejected(const std::vector<FormField>& fields, const std::vector<std::string>& errors) {
-    return htmlPage(422, "Setup", renderForm(title_, stored_, storedCount_, token_, fields, errors));
+    const std::string* hostBack = findField(fields, "r.host");
+    const std::string* portBack = findField(fields, "r.port");
+    return htmlPage(422, "Setup", renderForm(title_, stored_, storedCount_, token_, fields, errors,
+                                             relayCur_, !relayCur_.key.empty(),
+                                             hostBack ? *hostBack : std::string(),
+                                             portBack ? *portBack : std::string()));
   }
 
   HttpReply save(const std::string& body) {
@@ -617,23 +686,37 @@ class SetupForm {
 
     WifiStoreNet nets[WIFI_STORE_MAX_NETS];
     int count = 0;
+    RelayConfig relay;
     std::vector<std::string> errors;
     buildStoreRows(fields, stored_, storedCount_, nets, count, errors);
     for (int i = 0; i < count; ++i) {
       if (!validStoreSsid(nets[i].ssid)) { errors.push_back("WiFi network: the name is not usable"); break; }
       if (!validStorePass(nets[i].pass)) { errors.push_back("WiFi network: the password is not usable"); break; }
     }
+    // #140: the relay fields are part of the same save — everything is
+    // validated BEFORE anything is written, so a rejected save changes
+    // neither the WiFi list nor the relay configuration.
+    const bool relayOk = buildRelayConfig(fields, relayCur_, relay, errors);
     if (!errors.empty()) return rejected(fields, errors);
 
     if (!store_.save(nets, count)) {
       return textReply(500, "Could not write the credentials to flash; nothing was changed - try again");
     }
+    if (!relayStore_.save(relay)) {
+      // The WiFi list is in; the relay configuration refused to persist.
+      // Stay in setup: the next save rewrites both (the WiFi rows the form
+      // brings back are now the stored ones, and their passwords are kept
+      // by the blank-field rule).
+      return textReply(500, "Could not write the relay configuration to flash - the WiFi list was saved; try again");
+    }
     saved_ = true;
-    return restartingPage("Saved");
+    return restartingPage("Saved - the node will join your WiFi and report to your relay");
   }
 
   std::string title_;
   WifiStore& store_;
+  RelayConfigStore& relayStore_;
+  RelayConfig relayCur_;
   WifiStoreNet stored_[WIFI_STORE_MAX_NETS];
   int storedCount_ = 0;
   std::string token_;
@@ -930,20 +1013,26 @@ inline int effectiveNetworksCount(const WifiStoreNet* stored, int storedCount) {
   return storedCount;
 }
 
-// ── The boot decision (v2): when the setup WiFi opens ───────────────────
+// ── The boot decision (v2/v3): when the setup WiFi opens ────────────────
 //   - setup ARMED (the dashboard's SETUP_MODE maintenance switch): always
 //     portal — the operator deliberately asked for it, on any node state;
 //   - NOT provisioned (the first successful WiFi connect never happened):
 //     portal — the first install is still incomplete, so the captive page
 //     is the node's only way forward (factory state, or credentials saved
 //     but never joined with);
-//   - provisioned: never — a WiFi outage retries with the normal flow; the
-//     captive portal must not reappear where anyone nearby could join it.
+//   - NO relay configuration in flash (#140: host, port, key): portal —
+//     the node has nowhere to report; this also serves the migration of a
+//     provisioned v2 node whose relay settings were compiled in until now;
+//   - provisioned WITH a relay configuration: never — a WiFi outage
+//     retries with the normal flow; the captive portal must not reappear
+//     where anyone nearby could join it.
 enum class PortalDecision { Portal, Normal };
 
-inline PortalDecision bootPortalDecision(bool setupArmed, bool provisioned, int usableNetworks) {
+inline PortalDecision bootPortalDecision(bool setupArmed, bool provisioned, int usableNetworks,
+                                         bool relayConfigured) {
   if (setupArmed) return PortalDecision::Portal;
   if (!provisioned) return PortalDecision::Portal;
+  if (!relayConfigured) return PortalDecision::Portal;
   if (usableNetworks <= 0) return PortalDecision::Portal; // defensive: provisioned implies entries
   return PortalDecision::Normal;
 }

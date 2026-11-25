@@ -20,8 +20,11 @@
 //   - log to the relay (remote_log.h) and keep itself updated over OTA
 //     (ota.h).
 //
-// Files: config.h (edit per install), board.h, wifi_store.h, wifi_store_hw.h,
-// setup_logic.h, setup_ap.h, wifi.h, net.h, ota.h, remote_log.h.
+// Files: board.h, wifi_store.h, wifi_store_hw.h, setup_logic.h,
+// setup_ap.h, wifi.h, net.h, ota.h, remote_log.h. There is NO config file
+// (task #140): the WiFi list AND the relay address + fleet key live in the
+// node's flash, written by its own setup page — a flashed binary plus one
+// phone visit is a complete install, and the end user never touches source.
 // Board: any supported ESP board (#131) — one sketch, board.h carries the
 // few board-specific bits (includes, chip id, watchdog, GPIO ceiling).
 // Settings from the relay override the compiled-in GPIO pin, active level,
@@ -30,7 +33,6 @@
 
 #include "board.h"
 
-#include "config.h"
 #include "net.h"
 #include "ota.h"
 #include "remote_log.h"
@@ -40,8 +42,18 @@
 #include "wifi_store.h"
 #include "wifi_store_hw.h"
 
-// Compiled-in defaults; the relay's settings page overrides gpioPin,
-// gpioActiveHigh, the status interval and the log level at runtime.
+// ── build-time defaults — there is NO config.h (task #140) ──
+// Everything a node NEEDS comes over the air: the WiFi list, the relay
+// address and the fleet key via the setup page; gpioPin/active level/
+// status interval/log level via the relay's settings push. These #ifndef
+// lines exist so a builder CAN override a default with -D flags without
+// touching the source — the end user never does.
+#ifndef ESPNET_SETUP_AP_PASSWORD
+#define ESPNET_SETUP_AP_PASSWORD "espnode1234"  // the setup WiFi's WPA2 password (public by design, per-build overridable)
+#endif
+#ifndef FW_VERSION
+#define FW_VERSION "2.0.0"  // bumped on every shipped release; OTA flashes the relay's image when it differs
+#endif
 #ifndef DEFAULT_GPIO_PIN
 #define DEFAULT_GPIO_PIN 5
 #endif
@@ -61,8 +73,12 @@
 // life-cycle flags. The list is copied into RAM buffers that outlive
 // setup(), so the WifiNetwork views (const char*) stay valid for the
 // sketch's lifetime.
-static espnet::EepromWifiStoreBackend storeBackend;
+static espnet::EepromRegionBackend storeBackend(0, espnet::WIFI_STORE_REGION_MAX);
+static espnet::EepromRegionBackend relayBackend(espnet::RELAY_CONFIG_BASE, espnet::RELAY_CONFIG_REGION_MAX);
 static espnet::WifiStore wifiStore;
+static espnet::RelayConfigStore relayConfigStore;
+static espnet::RelayConfig relayCfg;       // the flash-held relay host/port/key (#140)
+static bool relayConfigured = false;
 static espnet::WifiStoreNet storedNets[espnet::WIFI_STORE_MAX_NETS];
 static int storedCount = 0;
 static std::string effectiveSsid[espnet::WIFI_STORE_MAX_NETS];
@@ -80,8 +96,8 @@ static bool provisionedDone = false;   // the store's provisioned flag, mirrored
 static espnet::SetupPortal portal;
 static bool portalActive = false;
 
-// ── identity: the operator-set DEVICE_ID from config.h, or "esp-XXXXXXXX"
-// derived from the chip id (unique out of the box). Chosen at runtime. ──
+// ── identity: "esp-XXXXXXXX" derived from the chip id (unique out of the
+// box) — nothing to edit anywhere (#140). ──
 static String deviceAuto;
 static const char* DEVICE = nullptr; // filled in setup()
 
@@ -212,24 +228,24 @@ void setup() {
   delay(200);
   nodeLog.begin(&Serial);
 
-  // resolve the device id once (config.h's DEVICE_ID, else chip-id derived)
-  if (DEVICE_ID[0] != '\0') {
-    DEVICE = DEVICE_ID;
-  } else {
-    char buf[24];
-    snprintf(buf, sizeof(buf), "esp-%08X", (unsigned)espnet::chipId());
-    deviceAuto = String(buf);
-    DEVICE = deviceAuto.c_str();
-  }
+  // resolve the device id once: chip-id derived, unique out of the box
+  char buf[24];
+  snprintf(buf, sizeof(buf), "esp-%08X", (unsigned)espnet::chipId());
+  deviceAuto = String(buf);
+  DEVICE = deviceAuto.c_str();
 
   applyGpio();
   nodeLog.setMinLevel((espnet::LogLevel)minLogLevel);
   nodeLog.logf(espnet::LOG_INFO, "boot: %s fw %s gpio pin %ld (%s)", DEVICE, FW, gpioPin,
                gpioActiveHigh ? "active-high" : "active-low");
 
-  // ── credentials: the flash store is the ONLY source (#135 v2) ──
+  // ── credentials + relay configuration: flash is the ONLY source ──
+  // (#135 v2 the WiFi list, #140 the relay host/port/key)
   storeBackend.begin();
   wifiStore.begin(&storeBackend);
+  relayBackend.begin();
+  relayConfigStore.begin(&relayBackend);
+  relayConfigured = relayConfigStore.load(relayCfg);
   storedCount = wifiStore.load(storedNets, espnet::WIFI_STORE_MAX_NETS);
   provisionedDone = wifiStore.provisioned();
   if (espnet::effectiveNetworksCount(storedNets, storedCount) > 0) {
@@ -252,20 +268,21 @@ void setup() {
   // auto-opens it (a WiFi outage just retries).
   const bool portalWanted =
       espnet::bootPortalDecision(wifiStore.setupArmed(), provisionedDone,
-                                 effectiveCount) == espnet::PortalDecision::Portal;
+                                 effectiveCount, relayConfigured) == espnet::PortalDecision::Portal;
   if (portalWanted) {
-    portal.begin(wifiStore);
+    portal.begin(wifiStore, relayConfigStore);
     nodeLog.logf(espnet::LOG_WARN,
-                 "first install not complete (provisioned=%d armed=%d) - opening the setup WiFi; "
-                 "join '%s' (password in INSTALL.md) and pick the network(s) there",
-                 provisionedDone ? 1 : 0, wifiStore.setupArmed() ? 1 : 0, portal.ssid().c_str());
+                 "first install not complete (provisioned=%d armed=%d relay=%d) - opening the setup WiFi; "
+                 "join '%s' (password in INSTALL.md) and pick the network(s) + relay there",
+                 provisionedDone ? 1 : 0, wifiStore.setupArmed() ? 1 : 0, relayConfigured ? 1 : 0,
+                 portal.ssid().c_str());
     portal.start(0); // serve forever
     portalActive = true;
   }
 
   wifiMulti.begin(effectiveNets, effectiveCount, &nodeLog);
-  relay.begin(RELAY_HOST, RELAY_PORT, DEVICE, NODE_KEY, &nodeLog, makeHooks());
-  ota.begin(RELAY_HOST, RELAY_PORT, &nodeLog);
+  relay.begin(relayCfg.host.c_str(), relayCfg.port, DEVICE, relayCfg.key.c_str(), &nodeLog, makeHooks());
+  ota.begin(relayCfg.host.c_str(), relayCfg.port, &nodeLog);
 }
 
 void loop() {

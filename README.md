@@ -42,8 +42,11 @@ Design decisions worth knowing (each documented in the code):
   every previously hard-coded value; the relay's ports/keys stay in
   config.js on purpose — they need a restart, so the page shows them
   read-only instead.
-- The node's WiFi list lives ONLY in its flash store (#135 v2) — config.h
-  carries none — together with a `provisioned` flag (the first successful
+- The node carries NO config file at all (#140): the sketch has nothing to
+  edit — the WiFi list AND the relay address + fleet key live in its flash
+  store, written by the node's own setup page, so a flashed binary plus one
+  phone visit is a complete install and the end user never touches source
+  code. The store also carries a `provisioned` flag (the first successful
   WiFi connect happened) and a `setup-armed` flag (the dashboard's
   SETUP_MODE maintenance switch). The setup WiFi opens exactly while the
   first install is not complete or setup is armed, and NEVER on a

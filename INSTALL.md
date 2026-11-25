@@ -140,28 +140,21 @@ In the Arduino IDE (or arduino-cli):
    ESP board (#131): each board's core defines its own board macro and
    `board.h` picks the includes, the chip id, the watchdog feed and the GPIO
    ceiling from it. No per-board code to maintain.
-3. Edit `config.h`: `RELAY_HOST` (the Pi's IP), `RELAY_PORT` (7777),
-   `NODE_KEY` (the same key as `nodeKey` in the relay's config.js). Leave
-   `DEVICE_ID` empty to auto-derive a unique id from the chip. There is NO
-   WiFi list in `config.h` — the credentials come from the setup page
-   (section 4) and live in the node's flash.
+3. There is NOTHING to edit (task #140): the sketch carries no config
+   file. The node's WiFi network(s) AND its relay address + fleet key are
+   entered on the node's own setup page after the flash (section 4) and
+   stored in the node's flash; the device id derives from the chip id.
 4. Board "NodeMCU 1.0 (ESP-12E module)" (or your board), Upload.
 5. Open the Serial Monitor (115200) — the node logs its boot, WiFi join and
    relay connection there, and every log line also appears on the
    dashboard's Logs page.
 
-**Multi-wifi (#36):** the node knows a LIST of networks and always
-(re)connects to the strongest one it can see — the WiFiMulti pattern. List every network a node may sit on (different floors, rooms
-or extenders) in `config.h`:
-
-```c
-#define WIFI_NETWORK_1_SSID  "ground-floor"
-#define WIFI_NETWORK_1_PASS  "..."
-#define WIFI_NETWORK_2_SSID  "attic-extender"
-#define WIFI_NETWORK_2_PASS  "..."
-#define WIFI_NETWORK_3_SSID  ""       // unused slots stay empty
-#define WIFI_NETWORK_3_PASS  ""
-```
+**Multi-wifi (#36, #138):** the node knows a LIST of networks and always
+(re)connects to the strongest one it can see — the WiFiMulti pattern. On
+the setup page, "Add another network" adds a row per network (different
+floors, rooms or extenders); every row has its own Remove button. The
+node's flash sector holds up to 30 networks — the form refuses row 31 with
+that reason, never dropping a row silently:
 
 On every boot (and whenever the link drops) the node scans, picks the
 strongest KNOWN network and connects. While online it re-evaluates only
@@ -181,8 +174,9 @@ settings page warns about them.
 
 ## 4. First install over the air (no cables, #135)
 
-`config.h` carries no WiFi credentials at all: the node's flash store is
-the only credential source, and the node knows WHERE it is in its life. The
+The node carries no config file at all: its flash store is the only
+credential and relay-configuration source, and the node knows WHERE it is
+in its life. The
 setup WiFi opens exactly when the first install is not complete — never
 again on a mere outage.
 
@@ -198,13 +192,20 @@ How the first install goes:
    last 3 bytes of the chip id in lowercase hex, e.g. `espnode-setup-d4e5f6`
    — unique per board, so several bare nodes never collide.
 2. Join it from a phone. The WPA2 password is **`espnode1234`** unless the
-   build overrides it (`ESPNET_SETUP_AP_PASSWORD` in `config.h`). The phone's
-   captive-portal popup opens the setup page by itself; otherwise browse to
-   **http://192.168.4.1/**.
+   build overrides it (`ESPNET_SETUP_AP_PASSWORD` as a -D build flag). The
+   phone's captive-portal popup opens the setup page by itself; otherwise
+   browse to **http://192.168.4.1/**.
 3. Fill one row per network: name, password — or tick "open network" for a
-   network without one. A blank password field on a row whose network is
-   already stored keeps that password. The node always joins the STRONGEST
-   of the saved networks, so list every floor/extender the node may sit on.
+   network without one (the "Add another network" button adds rows, each
+   with its own Remove button). A blank password field on a row whose
+   network is already stored keeps that password. The node always joins the
+   STRONGEST of the saved networks, so list every floor/extender the node
+   may sit on.
+4. Fill the **Relay** section: the Pi's IP or hostname, the port (blank
+   means 7777), and the relay's `nodeKey`. The node cannot do its job
+   without them, so the save refuses to store half a configuration: the
+   WiFi list and the relay settings are written together or not at all.
+   The key is never shown back — a blank field keeps the stored one.
 4. **Save and restart** — the page refuses anything incomplete without
    storing half of it (all-or-nothing), writes the list to the node's flash
    and restarts the node. The setup WiFi disappears; the node joins the
@@ -260,7 +261,8 @@ Details worth knowing:
    setting can never brick the node. The settings page repeats the safe
    range for the fleet.
    ```
-   Bump `FW_VERSION` in `config.h` before compiling a new release.
+   Bump `FW_VERSION` (the sketch's inline default) before compiling a new
+   release.
 2. Dashboard → Firmware → set the version, upload the `.bin`.
 3. Nodes check the relay once a minute; when the served version differs
    from theirs they download, flash, log every step and reboot. Watch the

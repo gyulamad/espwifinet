@@ -12,8 +12,10 @@ module.exports = {
   // Shared secret the PHP frontend must send as X-API-Key on every /api call.
   // Generate one: node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
   relayKey: 'CHANGE-ME-relay-key',
-  // Shared secret each node must send in its auth line. Compile the same
-  // value into the sketch (arduino/ESP_node/config.h).
+  // Shared secret each node must send in its auth line. Each node stores
+  // it in its own flash via its setup page (task #140) - nothing to
+  // compile into a sketch: the end user flashes a binary and types this
+  // key (with the relay's address) on the node's setup page.
   nodeKey: 'CHANGE-ME-node-key',
   // Show a node offline after this long without any message. Must be at
   // least 3x the sketch's STATUS_INTERVAL_MS (settings.statusIntervalMs).
