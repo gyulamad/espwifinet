@@ -38,10 +38,19 @@ Directory layout:
 Requires Node.js ≥ 18 (`node --version`) on the Pi.
 
 ```bash
-# on the Pi
+# on the Pi - start from the code itself (this section assumes your user
+# is in the sudo group; `id -un` shows the name used below):
+git clone https://github.com/gyulamad/espwifinet
+cd espwifinet
+
+# copy the relay into /opt and hand it to YOUR user: the relay process
+# runs as your user and WRITES there (settings.json, its log files) - a
+# root-owned tree is what made `npm install` fail with EACCES.
 sudo mkdir -p /opt/espwifinet
 sudo cp -r nodejs/esp-relay /opt/espwifinet/
+sudo chown -R "$USER:" /opt/espwifinet/esp-relay
 cd /opt/espwifinet/esp-relay
+
 npm install --omit=dev
 
 # 1) create your config
@@ -70,7 +79,7 @@ After=network-online.target
 WorkingDirectory=/opt/espwifinet/esp-relay
 ExecStart=/usr/bin/node server.js
 Restart=always
-User=pi
+User=madarasze   # <- your login user (`id -un`), NOT root: the relay writes its settings and logs here
 
 [Install]
 WantedBy=multi-user.target
