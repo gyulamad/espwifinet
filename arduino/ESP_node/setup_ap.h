@@ -7,9 +7,9 @@
 // and to sockets. It is hardware glue: the desktop tests never compile it,
 // exactly like the radio paths of wifi.h.
 //
-// Adapted from espcamsys2's setup_mode.h (its bounded request reader and
-// reply framing, its captive DNS and slot handling), scaled to the node and
-// renamed into espnet.
+// Everything here is deliberately small and bounded: one reader per
+// connection, a fixed slot count, a request timeout, and a DNS that answers
+// every name so a phone's captive-portal check opens the form by itself.
 //
 // Design points worth knowing before changing anything:
 //  * The HTTP side is a small bounded reader on WiFiServer, not the

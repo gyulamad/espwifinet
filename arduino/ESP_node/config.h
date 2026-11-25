@@ -11,28 +11,19 @@
 
 #pragma once
 
-// ── WiFi: the node knows a LIST of networks and (re)connects to the
-// strongest one it can see (task #36, the WiFiMulti pattern). List every network a node may sit on — different floors,
-// rooms or extenders. Leave the SSID empty ("") for unused slots.
-//
-// This list is the FALLBACK: the networks picked on the node's own setup
-// page (task #135 — a factory-new node opens the "espnode-setup-xxxxxx"
-// WiFi) are stored in the node's flash and override it. Compile-in
-// credentials only when you want an install to work with NO setup-page
-// visit; leave the slots empty and the setup page walks the user through
-// (that is what makes a first install cable-free).
+// ── WiFi credentials are NOT here (task #135 v2) ──
+// The node has NO compiled-in WiFi list: the networks picked on the node's
+// own setup page are stored in the node's FLASH and are the only
+// credentials it ever uses. A factory-new node (blank flash) opens its own
+// "espnode-setup-xxxxxx" WiFi where a phone picks the network(s) — see
+// INSTALL.md section 4. Nothing to edit here for the WiFi; config.h stays
+// about the RELAY and the GPIO defaults.
 //
 // Optional: override the setup WiFi's own password (WPA2, 8..63 printable
 // characters). The default is in the repository, so it is public knowledge:
 // define ESPNET_SETUP_AP_PASSWORD here, before the sketch's includes, to
 // replace it.
 // #define ESPNET_SETUP_AP_PASSWORD "my-own-setup-key"
-#define WIFI_NETWORK_1_SSID  "YOUR-WIFI-NAME"
-#define WIFI_NETWORK_1_PASS  "YOUR-WIFI-PASSWORD"
-#define WIFI_NETWORK_2_SSID  ""
-#define WIFI_NETWORK_2_PASS  ""
-#define WIFI_NETWORK_3_SSID  ""
-#define WIFI_NETWORK_3_PASS  ""
 
 // ── Relay (the Raspberry Pi) ──
 #define RELAY_HOST  "192.168.1.10"   // relay's IP or hostname

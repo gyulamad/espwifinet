@@ -55,20 +55,12 @@
 #define DEFAULT_MIN_LOG_LEVEL 0
 #endif
 
-// The known networks (config.h) — the FALLBACK list: used only when the
-// flash store (wifi_store.h) holds nothing usable. Unused slots keep an
-// empty ssid and are skipped by the strongest-network picker (wifi.h).
-static espnet::WifiNetwork NETWORKS[] = {
-    {WIFI_NETWORK_1_SSID, WIFI_NETWORK_1_PASS},
-    {WIFI_NETWORK_2_SSID, WIFI_NETWORK_2_PASS},
-    {WIFI_NETWORK_3_SSID, WIFI_NETWORK_3_PASS},
-};
-
-// ── credentials: the flash store first, config.h's list second (#135) ──
-// The setup page writes the store; a valid, non-empty store overrides the
-// compiled-in list, an empty or damaged one falls back to it. The effective
-// list lives in RAM buffers that outlive setup(), so the WifiNetwork views
-// (const char*) stay valid for the sketch's lifetime.
+// ── credentials: the flash store is the ONLY source (task #135 v2) ──
+// config.h carries no WiFi list anymore: the networks picked on the setup
+// page live in the node's flash (wifi_store.h), together with the two
+// life-cycle flags. The list is copied into RAM buffers that outlive
+// setup(), so the WifiNetwork views (const char*) stay valid for the
+// sketch's lifetime.
 static espnet::EepromWifiStoreBackend storeBackend;
 static espnet::WifiStore wifiStore;
 static espnet::WifiStoreNet storedNets[espnet::WIFI_STORE_MAX_NETS];
@@ -77,23 +69,16 @@ static std::string effectiveSsid[espnet::WIFI_STORE_MAX_NETS];
 static std::string effectivePass[espnet::WIFI_STORE_MAX_NETS];
 static espnet::WifiNetwork effectiveNets[espnet::WIFI_STORE_MAX_NETS];
 static int effectiveCount = 0;
+static bool provisionedDone = false;   // the store's provisioned flag, mirrored
 
-// ── the setup WiFi (task #135) ──
-// A node with NOTHING to join with opens it at once and serves until the
-// form saves (serveCapMs 0 = forever). A node WITH credentials that has not
-// joined anything for WIFI_FALLBACK_SETUP_MS opens it in bounded windows of
-// SETUP_SERVE_MAX_MS, so a temporary outage cannot take a working node
-// hostage: after each window the normal scan/connect flow resumes, and any
-// successful connection resets the timer.
-#ifndef WIFI_FALLBACK_SETUP_MS
-#define WIFI_FALLBACK_SETUP_MS 300000  // disconnected this long -> reopen setup (5 min)
-#endif
-#ifndef SETUP_SERVE_MAX_MS
-#define SETUP_SERVE_MAX_MS 600000      // one fallback window (10 min)
-#endif
+// ── the setup WiFi (task #135 v2) ──
+// bootPortalDecision (setup_logic.h): it opens exactly when the first
+// install is not complete (factory, or saved-but-never-connected) or the
+// operator armed SETUP_MODE — and then serves FOREVER until the form saves
+// (the save also disarms). A provisioned node on a WiFi outage just retries:
+// no captive portal reappears where anyone nearby could join it.
 static espnet::SetupPortal portal;
 static bool portalActive = false;
-static uint32_t lastOnlineMs = 0;
 
 // ── identity: the operator-set DEVICE_ID from config.h, or "esp-XXXXXXXX"
 // derived from the chip id (unique out of the box). Chosen at runtime. ──
@@ -161,10 +146,23 @@ static void onSetGpio(const char* state, long pin, bool activeHigh) {
   relay.sendGpioAck(gpioStateText(), gpioPin);
 }
 
+static void onSetupMode(bool armed) {
+  if (!armed || wifiStore.setupArmed()) return; // only the rising edge arms
+  if (wifiStore.armSetup(true)) {
+    nodeLog.logf(espnet::LOG_WARN,
+                 "setup armed from the dashboard - restarting into the setup WiFi '%s'",
+                 portal.ssid().c_str());
+    ESP.restart(); // the boot decision (armed) opens the setup WiFi
+  } else {
+    nodeLog.logf(espnet::LOG_ERROR, "setup: could not write the armed flag to flash");
+  }
+}
+
 static espnet::NetHooks makeHooks() {
   espnet::NetHooks hooks;
   hooks.onSettings = onSettings;
   hooks.onSetGpio = onSetGpio;
+  hooks.onSetupMode = onSetupMode;
   return hooks;
 }
 
@@ -229,10 +227,11 @@ void setup() {
   nodeLog.logf(espnet::LOG_INFO, "boot: %s fw %s gpio pin %ld (%s)", DEVICE, FW, gpioPin,
                gpioActiveHigh ? "active-high" : "active-low");
 
-  // ── credentials: flash store first, config.h's compiled list second ──
+  // ── credentials: the flash store is the ONLY source (#135 v2) ──
   storeBackend.begin();
   wifiStore.begin(&storeBackend);
   storedCount = wifiStore.load(storedNets, espnet::WIFI_STORE_MAX_NETS);
+  provisionedDone = wifiStore.provisioned();
   if (espnet::effectiveNetworksCount(storedNets, storedCount) > 0) {
     for (int i = 0; i < storedCount; ++i) {
       effectiveSsid[i] = storedNets[i].ssid;
@@ -241,29 +240,25 @@ void setup() {
       effectiveNets[i].pass = effectivePass[i].c_str();
     }
     effectiveCount = storedCount;
-    nodeLog.logf(espnet::LOG_INFO, "credentials: %d from flash (setup page), config.h list unused", effectiveCount);
+    nodeLog.logf(espnet::LOG_INFO, "credentials: %d from flash (setup page)", effectiveCount);
   } else {
-    for (unsigned i = 0; i < sizeof(NETWORKS) / sizeof(NETWORKS[0]) && effectiveCount < espnet::WIFI_STORE_MAX_NETS; ++i) {
-      if (NETWORKS[i].ssid == nullptr || NETWORKS[i].ssid[0] == '\0') continue;
-      effectiveSsid[effectiveCount] = NETWORKS[i].ssid;
-      effectivePass[effectiveCount] = NETWORKS[i].pass;
-      effectiveNets[effectiveCount].ssid = effectiveSsid[effectiveCount].c_str();
-      effectiveNets[effectiveCount].pass = effectivePass[effectiveCount].c_str();
-      ++effectiveCount;
-    }
-    nodeLog.logf(espnet::LOG_INFO, "credentials: %d compiled in (config.h), flash store %s",
-                 effectiveCount, storedCount > 0 ? "damaged" : "empty");
+    storedCount = 0; // damaged rows are never handed to the picker
+    nodeLog.logf(espnet::LOG_INFO, "credentials: flash store empty or damaged (%d usable)", storedCount);
   }
 
-  if (effectiveCount == 0) {
-    // Factory state: nothing to join with anywhere — open the setup WiFi
-    // and serve the form until it saves (forever, the session retries on
-    // its own if the AP start fails).
+  // The boot decision (setup_logic.h, desktop-tested): the setup WiFi opens
+  // exactly when the first install is not complete or SETUP_MODE is armed —
+  // and then serves FOREVER until the form saves. A provisioned node NEVER
+  // auto-opens it (a WiFi outage just retries).
+  const bool portalWanted =
+      espnet::bootPortalDecision(wifiStore.setupArmed(), provisionedDone,
+                                 effectiveCount) == espnet::PortalDecision::Portal;
+  if (portalWanted) {
     portal.begin(wifiStore);
     nodeLog.logf(espnet::LOG_WARN,
-                 "no credentials anywhere — opening the setup WiFi; join '%s' "
-                 "(password in INSTALL.md) and pick the network(s) there",
-                 portal.ssid().c_str());
+                 "first install not complete (provisioned=%d armed=%d) - opening the setup WiFi; "
+                 "join '%s' (password in INSTALL.md) and pick the network(s) there",
+                 provisionedDone ? 1 : 0, wifiStore.setupArmed() ? 1 : 0, portal.ssid().c_str());
     portal.start(0); // serve forever
     portalActive = true;
   }
@@ -271,7 +266,6 @@ void setup() {
   wifiMulti.begin(effectiveNets, effectiveCount, &nodeLog);
   relay.begin(RELAY_HOST, RELAY_PORT, DEVICE, NODE_KEY, &nodeLog, makeHooks());
   ota.begin(RELAY_HOST, RELAY_PORT, &nodeLog);
-  lastOnlineMs = millis();
 }
 
 void loop() {
@@ -284,12 +278,10 @@ void loop() {
       return;
     }
     if (step == espnet::SetupStep::Handback) {
-      // A bounded fallback window closed without a save: resume the normal
-      // scan/connect flow; the timer reopens the setup WiFi if nothing
-      // joins for another WIFI_FALLBACK_SETUP_MS.
+      // Defensive: the sketch always serves forever (serveCapMs 0), so a
+      // handback should not happen. Resume the normal flow anyway.
       portalActive = false;
-      lastOnlineMs = millis();
-      nodeLog.logf(espnet::LOG_INFO, "setup: window closed - resuming the normal WiFi flow");
+      nodeLog.logf(espnet::LOG_INFO, "setup: closed - resuming the normal WiFi flow");
       wifiMulti.begin(effectiveNets, effectiveCount, &nodeLog);
     }
     flushLogs();
@@ -299,7 +291,14 @@ void loop() {
   wifiMulti.ensure(); // scan → pick the strongest known network → connect
 
   if (wifiMulti.connected()) {
-    lastOnlineMs = millis();
+    if (!provisionedDone) {
+      // The FIRST successful WiFi connect: the first install is complete
+      // (v2). Persisted at once, so a power cut cannot resurrect the setup
+      // WiFi on a provisioned node.
+      provisionedDone = wifiStore.markProvisioned();
+      nodeLog.logf(espnet::LOG_INFO, "wifi: first connect - node is provisioned (%s)",
+                   provisionedDone ? "stored" : "store write FAILED");
+    }
     ensureRelay();
     if (relay.connected()) {
       if (!relay.pumpMessages()) {
@@ -309,17 +308,10 @@ void loop() {
       maybeSendStatus();
     }
     ota.tick(FW);
-  } else if (effectiveCount > 0 && millis() - lastOnlineMs > (uint32_t)WIFI_FALLBACK_SETUP_MS) {
-    // Nothing joined for a full window: the credentials are probably wrong
-    // or the network is gone — open the setup WiFi in a bounded window so
-    // the phone that set the node up can fix or replace the list.
-    portal.begin(wifiStore);
-    nodeLog.logf(espnet::LOG_WARN,
-                 "wifi: nothing joined for %lu ms — opening the setup WiFi '%s' for a window",
-                 (unsigned long)WIFI_FALLBACK_SETUP_MS, portal.ssid().c_str());
-    portal.start((uint32_t)SETUP_SERVE_MAX_MS);
-    portalActive = true;
   }
+  // No fallback portal: a provisioned node in an outage just retries
+  // (bootPortalDecision). Re-entry is deliberate — arm SETUP_MODE from the
+  // dashboard and power-cycle the node.
 
   flushLogs();
 }

@@ -90,10 +90,15 @@ struct Captured {
   bool settingsActive = true;
   long settingsStatus = -1;
   long settingsMin = -2;
+  int setupModeSeen = -1; // -1 = the hook never fired (no setupMode key)
   std::string gpioState;
   long gpioPin = -1;
 };
 static Captured g_cap; // NetHooks are C function pointers (as on hardware)
+
+static void hookSetupMode(bool armed) {
+  g_cap.setupModeSeen = armed ? 1 : 0;
+}
 
 static void hookSettings(long pin, bool active, long ms, long minLevel) {
   g_cap.settingsPin = pin;
@@ -190,19 +195,21 @@ static void testPumpDispatch() {
   espnet::NetHooks hooks;
   hooks.onSettings = hookSettings;
   hooks.onSetGpio = hookSetGpio;
+  hooks.onSetupMode = hookSetupMode;
 
   WiFiClient client;
   espnet::RelayConnection conn;
   conn.begin("10.0.0.1", 7777, "esp-TEST", "key", &lg, hooks, &client);
 
   // The relay's real messages (same bytes the e2e suite sends over TCP).
-  client.feed(framed("{\"type\":\"settings\",\"gpioPin\":14,\"gpioActiveHigh\":false,\"statusIntervalMs\":30000,\"minLogLevel\":\"error\"}"));
+  client.feed(framed("{\"type\":\"settings\",\"gpioPin\":14,\"gpioActiveHigh\":false,\"statusIntervalMs\":30000,\"minLogLevel\":\"error\",\"setupMode\":true}"));
   client.feed(framed("{\"type\":\"set_gpio\",\"state\":\"on\",\"pin\":14,\"activeHigh\":false}"));
   client.feed(framed("{\"type\":\"ping\"}"));
 
   assert(conn.pumpMessages());
   assert(g_cap.settingsPin == 14 && g_cap.settingsActive == false && g_cap.settingsStatus == 30000);
   assert(g_cap.settingsMin == 2); // the pushed log level reaches the hook
+  assert(g_cap.setupModeSeen == 1); // the SETUP_MODE switch rides the settings push (#135 v2)
   assert(g_cap.gpioState == "on" && g_cap.gpioPin == 14);
 
   // the ping must have been answered with a pong on the same connection
@@ -213,13 +220,14 @@ static void testPumpDispatch() {
   assert(len == reply.size() - 4);
 
   // split delivery: one message chopped across two reads must still parse
-  const std::string whole = framed("{\"type\":\"settings\",\"gpioPin\":5,\"gpioActiveHigh\":true,\"statusIntervalMs\":10000}");
+  const std::string whole = framed("{\"type\":\"settings\",\"gpioPin\":5,\"gpioActiveHigh\":true,\"statusIntervalMs\":10000,\"setupMode\":false}");
   client.feed(whole.substr(0, 10));
   assert(conn.pumpMessages());
   client.feed(whole.substr(10));
   assert(conn.pumpMessages());
   assert(g_cap.settingsPin == 5 && g_cap.settingsActive == true && g_cap.settingsStatus == 10000);
   assert(g_cap.settingsMin == -1); // a settings message without minLogLevel keeps the compiled level
+  assert(g_cap.setupModeSeen == 0); // ... and without setupMode the hook fires with false (older relay)
 
   // a bad length prefix is a protocol error (above the 4096-byte sanity cap)
   std::string bad;
@@ -478,6 +486,76 @@ static void testWifiStore() {
   assert(!store.save(bad, 1));
 }
 
+// ── task #135 v2: the life-cycle flags and the v1 migration ──
+static void testWifiStoreV2() {
+  using espnet::WifiStoreNet;
+  RamStoreBackend backend;
+  espnet::WifiStore store;
+  store.begin(&backend);
+
+  // a fresh save from the setup page: v2 blob, NOT provisioned (the flag
+  // flips on the first CONNECT, not on the save), not armed
+  WifiStoreNet nets[1];
+  nets[0].ssid = "Home";
+  nets[0].pass = "secret12";
+  assert(store.save(nets, 1));
+  WifiStoreNet back[espnet::WIFI_STORE_MAX_NETS];
+  assert(store.load(back, espnet::WIFI_STORE_MAX_NETS) == 1);
+  assert(!store.provisioned() && !store.setupArmed());
+
+  // arm (SETUP_MODE): entries survive the flag write; the save that follows
+  // — a provisioning event — clears the armed flag and keeps the entries
+  assert(store.armSetup(true) && store.setupArmed());
+  assert(store.load(back, espnet::WIFI_STORE_MAX_NETS) == 1);
+  assert(store.setupArmed());
+  assert(store.save(nets, 1));
+  assert(!store.setupArmed());
+  assert(!store.provisioned());
+
+  // provision (the first successful WiFi connect): persisted at once, so a
+  // power cut right after cannot resurrect the setup WiFi
+  assert(store.markProvisioned() && store.provisioned());
+  assert(store.load(back, espnet::WIFI_STORE_MAX_NETS) == 1 && store.provisioned());
+  assert(!store.setupArmed());
+
+  // a v1 ("ENW1") region migrates on load: entries arrive provisioned (they
+  // were saved through the setup page, so the node connected with them)
+  RamStoreBackend v1Backend;
+  espnet::WifiStore v1Store;
+  v1Store.begin(&v1Backend);
+  const char* blob = "Home\tsecret12\n";
+  const size_t blen = 14;
+  std::string region = "ENW1";
+  region += static_cast<char>((blen >> 8) & 0xff);
+  region += static_cast<char>(blen & 0xff);
+  region += blob;
+  v1Backend.data_ = region;
+  v1Backend.blank_ = false; // the region exists (as a real flash erase would leave it readable)
+  assert(v1Store.load(back, espnet::WIFI_STORE_MAX_NETS) == 1);
+  assert(back[0].ssid == "Home" && back[0].pass == "secret12");
+  assert(v1Store.provisioned());
+  assert(!v1Store.setupArmed());
+  // a flag write migrates the region to v2 in place, entries intact
+  assert(v1Store.markProvisioned());
+  assert(v1Store.load(back, espnet::WIFI_STORE_MAX_NETS) == 1);
+  assert(v1Store.provisioned());
+
+  // damaged entries read as "no credentials" with CLEAN flags (no stale
+  // provisioned/armed state can survive a corrupt blob)
+  std::string damaged = "ENW2";
+  damaged += static_cast<char>(0x03); // provisioned + armed in the header
+  damaged += static_cast<char>(0x00);
+  damaged += static_cast<char>(0x0f);
+  damaged += std::string("Home\t1234567\n"); // an invalid password inside
+  RamStoreBackend dBackend;
+  espnet::WifiStore dStore;
+  dStore.begin(&dBackend);
+  dBackend.data_ = damaged;
+  dBackend.blank_ = false;
+  assert(dStore.load(back, espnet::WIFI_STORE_MAX_NETS) == 0);
+  assert(!dStore.provisioned() && !dStore.setupArmed());
+}
+
 // ── task #135: the setup decisions (setup_logic.h) ──
 
 static void testSetupDecisions() {
@@ -512,6 +590,17 @@ static void testSetupDecisions() {
   rows[1].ssid = "a\tb"; // one damaged row poisons the list
   rows[1].pass = "abcdefgh";
   assert(espnet::effectiveNetworksCount(rows, 2) == 0);
+
+  // the boot decision (v2): armed always opens the setup WiFi; not
+  // provisioned always opens it (factory, or saved-but-never-connected);
+  // a provisioned node NEVER opens it on its own (an outage just retries)
+  using espnet::PortalDecision;
+  assert(espnet::bootPortalDecision(true, false, 3) == PortalDecision::Portal);
+  assert(espnet::bootPortalDecision(true, true, 3) == PortalDecision::Portal);
+  assert(espnet::bootPortalDecision(false, false, 0) == PortalDecision::Portal);
+  assert(espnet::bootPortalDecision(false, false, 2) == PortalDecision::Portal);
+  assert(espnet::bootPortalDecision(false, true, 2) == PortalDecision::Normal);
+  assert(espnet::bootPortalDecision(false, true, 0) == PortalDecision::Portal); // defensive
 }
 
 // ── task #135: the setup form (SetupForm) ──
@@ -653,6 +742,22 @@ static void testSetupForm() {
   assert(form5.handle("POST", "/", "").status == 405);     // the page wants GET
   assert(form5.handle("GET", "/save", "").status == 405);  // the save wants POST
   assert(form5.handle("POST", "/save?x=1", saveBody("w.ssid.1=Cafe&w.open.1=1")).status == 200); // query ignored
+
+  // a save on an ARMED store clears the armed flag: the SETUP_MODE request
+  // is served by this very save, and the node reboots provisioned-or-not
+  RamStoreBackend armedBackend;
+  espnet::WifiStore armedStore;
+  armedStore.begin(&armedBackend);
+  espnet::WifiStoreNet seed[1];
+  seed[0].ssid = "Old";
+  seed[0].pass = "oldpass1";
+  assert(armedStore.save(seed, 1));
+  assert(armedStore.armSetup(true));
+  espnet::SetupForm armedForm("espnode-setup-aabbcc", armedStore, seed, 1, kToken);
+  assert(armedForm.handle("POST", "/save", saveBody("w.ssid.1=New&w.pass.1=newpass1")).status == 200);
+  assert(!armedStore.setupArmed());
+  assert(armedStore.load(stored, espnet::WIFI_STORE_MAX_NETS) == 1);
+  assert(stored[0].ssid == "New" && stored[0].pass == "newpass1");
 }
 
 // ── task #135: the setup session (SetupSession) ──
@@ -857,15 +962,16 @@ static void testHttpRequestReader() {
 #include "../../arduino/ESP_node/ESP_node.ino"
 
 static void testSketchCompiles() {
-  setup(); // the stub boot: blank store, compiled config.h list, no portal
-  assert(effectiveCount == 1);
-  assert(!portalActive);
+  setup(); // the stub boot: blank store, NO compiled list (v2) -> factory
+  assert(effectiveCount == 0);
+  assert(portalActive); // bootPortalDecision: not provisioned -> the setup WiFi
   assert(std::string(DEVICE).rfind("esp-", 0) == 0);
-  assert(std::string(effectiveNets[0].ssid) == "YOUR-WIFI-NAME");
+  assert(portal.ssid().rfind("espnode-setup-", 0) == 0);
+  assert(!ESP.restarted);
 
-  // a few loop passes: the wifi state machine and the log queue run without
-  // touching the radio beyond what the stub drives
+  // a few loop passes: the setup session serves (stub radio), no crash
   for (int i = 0; i < 3; ++i) loop();
+  assert(portalActive);
   assert(!ESP.restarted);
 }
 
@@ -890,6 +996,8 @@ int main() {
   printf("PASS ota compile\n");
   testWifiStore();
   printf("PASS wifi store\n");
+  testWifiStoreV2();
+  printf("PASS wifi store v2 flags\n");
   testSetupDecisions();
   printf("PASS setup decisions\n");
   testSetupForm();

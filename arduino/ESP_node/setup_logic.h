@@ -6,13 +6,14 @@
 // decision here is compiled and tested on a desktop
 // (tests/cpp/test_net_logic.cpp), like wifi_store.h.
 //
-// Adapted from espcamsys2's cable-free setup system (its setup_logic.h /
-// setup_form.h / setup_session.h / the request reader of setup_mode.h),
-// scaled down to what a base node needs: no settings schema, no master
-// password, no SETUP_MODE switch — the store holds only the WiFi list
-// (wifi_store.h) and the setup WiFi exists only while the node has no
-// usable credentials (factory state) or cannot join any of them (the
-// fallback window, driven by the sketch).
+// The store (wifi_store.h) holds the WiFi list AND the two life-cycle flags:
+// `provisioned` (the first successful WiFi connect happened) and
+// `setup-armed` (the operator asked for a setup session via the dashboard's
+// SETUP_MODE maintenance switch). The setup WiFi exists exactly while the
+// first install is NOT complete (factory state, or credentials saved but
+// never connected with) or setup is armed — never again on a mere outage
+// (v2: a provisioned node in a WiFi outage just retries, it does not open a
+// captive portal anyone nearby could join).
 //
 // Rules this file must get right, because the setup page can write the
 // node's credentials:
@@ -672,7 +673,7 @@ class SetupSession {
 // with the status to answer (400/411/413/431/501): no chunked bodies, no
 // folded or bare-LF headers, no control characters, no body without
 // Content-Length, nothing past the caps. Pure: no sockets, so it is tested
-// byte by byte (adapted from espcamsys2's setup_mode.h reader).
+// byte by byte.
 class HttpRequestReader {
  public:
   enum Status { NeedMore, Complete, Rejected };
@@ -814,19 +815,36 @@ class HttpRequestReader {
 };
 
 // ── The store-vs-compiled decision ──────────────────────────────────────
-// How many usable networks the node boots with: a valid, non-empty store
-// wins; an empty or damaged store falls back to the compiled-in list. Zero
-// means "open the setup WiFi" (nothing anywhere to join with).
+// How many usable networks the stored list holds: any invalid row means
+// "damaged" and the answer is 0 (no credentials to join with). Zero feeds
+// bootPortalDecision.
 inline int effectiveNetworksCount(const WifiStoreNet* stored, int storedCount) {
   if (stored == nullptr || storedCount <= 0) return 0;
   // The store's rows arrive pre-validated (wifiStoreParse refuses the whole
   // blob on any bad entry); this re-check keeps the decision safe even
-  // against a caller-built array: ANY invalid row means "damaged" and the
-  // compiled-in list takes over.
+  // against a caller-built array.
   for (int i = 0; i < storedCount; ++i) {
     if (!validStoreSsid(stored[i].ssid)) return 0;
   }
   return storedCount;
+}
+
+// ── The boot decision (v2): when the setup WiFi opens ───────────────────
+//   - setup ARMED (the dashboard's SETUP_MODE maintenance switch): always
+//     portal — the operator deliberately asked for it, on any node state;
+//   - NOT provisioned (the first successful WiFi connect never happened):
+//     portal — the first install is still incomplete, so the captive page
+//     is the node's only way forward (factory state, or credentials saved
+//     but never joined with);
+//   - provisioned: never — a WiFi outage retries with the normal flow; the
+//     captive portal must not reappear where anyone nearby could join it.
+enum class PortalDecision { Portal, Normal };
+
+inline PortalDecision bootPortalDecision(bool setupArmed, bool provisioned, int usableNetworks) {
+  if (setupArmed) return PortalDecision::Portal;
+  if (!provisioned) return PortalDecision::Portal;
+  if (usableNetworks <= 0) return PortalDecision::Portal; // defensive: provisioned implies entries
+  return PortalDecision::Normal;
 }
 
 } // namespace espnet

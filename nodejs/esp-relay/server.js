@@ -141,6 +141,7 @@ function settingsMessage() {
     gpioActiveHigh: s.gpioActiveHigh,
     statusIntervalMs: s.statusIntervalMs,
     minLogLevel: s.minLogLevel,
+    setupMode: s.setupMode, // #135 v2: the SETUP_MODE maintenance switch
   };
 }
 
@@ -403,7 +404,7 @@ app.get('/api/config', (req, res) => {
     offlineAfterMs: s.offlineAfterMs,
     statusIntervalMs: s.statusIntervalMs,
     minLogLevel: s.minLogLevel,
-    editableLive: ['gpioPin', 'gpioActiveHigh', 'statusIntervalMs', 'offlineAfterMs', 'minLogLevel', 'names'],
+    editableLive: ['gpioPin', 'gpioActiveHigh', 'statusIntervalMs', 'offlineAfterMs', 'minLogLevel', 'setupMode', 'names'],
     needsRestart: 'ports and keys are read from config.js on the Pi at startup — edit them there and restart the relay',
   });
 });

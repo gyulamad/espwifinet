@@ -94,6 +94,10 @@ void sendMessage(WiFiClient& client, const char* json) {
 struct NetHooks {
   void (*onSettings)(long gpioPin, bool activeHigh, long statusMs, long minLogLevel) = nullptr;
   void (*onSetGpio)(const char* state, long pin, bool activeHigh) = nullptr;
+  // setupMode (#135 v2): the relay's SETUP_MODE maintenance switch rides in
+  // the settings payload; true means "restart into the setup WiFi". Older
+  // relays never send the key and the sketch sees false.
+  void (*onSetupMode)(bool armed) = nullptr;
 };
 
 class RelayConnection {
@@ -237,6 +241,11 @@ class RelayConnection {
         minLevel = (strcmp(lvl, "warn") == 0) ? 1 : (strcmp(lvl, "error") == 0 ? 2 : 0);
       }
       if (hooks_.onSettings != nullptr) hooks_.onSettings(pin, activeHigh, statusMs, minLevel);
+      // setupMode (#135 v2): optional boolean, absent on older relays.
+      bool setupMode = false;
+      if (jsonGetBool(json, "setupMode", setupMode) && hooks_.onSetupMode != nullptr) {
+        hooks_.onSetupMode(setupMode);
+      }
       return true;
     }
     if (strcmp(type, "set_gpio") == 0) {

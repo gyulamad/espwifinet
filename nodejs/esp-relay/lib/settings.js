@@ -26,6 +26,7 @@ const DEFAULT_SETTINGS = {
   statusIntervalMs: 10000,
   offlineAfterMs: 45000,
   minLogLevel: 'info',
+  setupMode: false, // #135 v2: the SETUP_MODE maintenance switch (re-enter WiFi setup on next boot)
   names: {},
 };
 
@@ -111,6 +112,19 @@ function validateSettings(input) {
     value.minLogLevel = input.minLogLevel;
   } else {
     errors.push('minLogLevel must be one of: info, warn, error');
+  }
+
+  // setupMode (#135 v2): the SETUP_MODE maintenance switch. STRICT boolean —
+  // "false" as a string must not arm the fleet, and an absent key means the
+  // switch is off. While true, every node that (re)boots opens its setup
+  // WiFi (the node's setup form save clears its own armed flag); it is a
+  // wrench for re-provisioning, not a switch to leave on.
+  if (input.setupMode === undefined) {
+    value.setupMode = DEFAULT_SETTINGS.setupMode;
+  } else if (input.setupMode === true || input.setupMode === false) {
+    value.setupMode = input.setupMode;
+  } else {
+    errors.push('setupMode must be true or false');
   }
 
   if (input.names !== undefined) {

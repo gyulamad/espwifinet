@@ -59,6 +59,17 @@ function run() {
   assert.strictEqual(validateSettings({ minLogLevel: 'error' }).ok, true);
   assert.strictEqual(validateSettings({ minLogLevel: 'DEBUG' }).ok, false);
   assert.strictEqual(validateSettings({ minLogLevel: 1 }).ok, false);
+
+  // setupMode (#135 v2): the SETUP_MODE maintenance switch. Strict boolean —
+  // the string "false" must NOT arm the fleet, absent = off, default off.
+  assert.strictEqual(validateSettings({}).value.setupMode, false);
+  assert.strictEqual(validateSettings({ setupMode: true }).ok, true);
+  assert.strictEqual(validateSettings({ setupMode: true }).value.setupMode, true);
+  assert.strictEqual(validateSettings({ setupMode: false }).ok, true);
+  assert.strictEqual(validateSettings({ setupMode: false }).value.setupMode, false);
+  assert.strictEqual(validateSettings({ setupMode: 'false' }).ok, false);
+  assert.strictEqual(validateSettings({ setupMode: 'true' }).ok, false);
+  assert.strictEqual(validateSettings({ setupMode: 1 }).ok, false);
   assert.strictEqual(validateSettings({ minLogLevel: null }).ok, false);
 
   // SettingsStore.existed: config values stay in charge until the first save

@@ -40,6 +40,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && $settings !== null) {
         'statusIntervalMs' => (int)($_POST['statusIntervalMs'] ?? 10000),
         'offlineAfterMs' => (int)($_POST['offlineAfterMs'] ?? 45000),
         'minLogLevel' => (string)($_POST['minLogLevel'] ?? 'info'),
+        'setupMode' => isset($_POST['setupMode']),
         'names' => [],
     ];
 
@@ -112,6 +113,7 @@ foreach (['info', 'warn', 'error'] as $lvl) {
 }
 echo '</select></label>' . "\n";
 echo '<p class="muted">info queues everything, warn drops info lines, error queues errors only. The node\'s serial output always shows every line. Changes are pushed to online nodes on save.</p>' . "\n";
+echo '<label class="check"><input type="checkbox" name="setupMode"' . (!empty($settings['setupMode']) ? ' checked' : '') . '> WiFi setup re-entry (SETUP_MODE, maintenance): while ON, every node that (re)boots opens its own setup WiFi instead of connecting. Power-cycle the ONE node you want to re-provision, save its WiFi from the phone, then turn this OFF.</label>' . "\n";
 echo '</fieldset>' . "\n";
 echo '<fieldset>' . "\n";
 echo '<legend>Node names</legend>' . "\n";

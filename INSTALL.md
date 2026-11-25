@@ -131,10 +131,11 @@ In the Arduino IDE (or arduino-cli):
    ESP board (#131): each board's core defines its own board macro and
    `board.h` picks the includes, the chip id, the watchdog feed and the GPIO
    ceiling from it. No per-board code to maintain.
-3. Edit `config.h`: the WiFi network list (see below), `RELAY_HOST` (the
-   Pi's IP), `RELAY_PORT` (7777), `NODE_KEY` (the same key as `nodeKey` in
-   the relay's config.js). Leave `DEVICE_ID` empty to auto-derive a unique
-   id from the chip.
+3. Edit `config.h`: `RELAY_HOST` (the Pi's IP), `RELAY_PORT` (7777),
+   `NODE_KEY` (the same key as `nodeKey` in the relay's config.js). Leave
+   `DEVICE_ID` empty to auto-derive a unique id from the chip. There is NO
+   WiFi list in `config.h` — the credentials come from the setup page
+   (section 4) and live in the node's flash.
 4. Board "NodeMCU 1.0 (ESP-12E module)" (or your board), Upload.
 5. Open the Serial Monitor (115200) — the node logs its boot, WiFi join and
    relay connection there, and every log line also appears on the
@@ -171,14 +172,16 @@ settings page warns about them.
 
 ## 4. First install over the air (no cables, #135)
 
-A node flashed with EMPTY `config.h` WiFi slots (the typical first install —
-no credentials edited into the sketch) does not sit silent: it opens its own
-setup WiFi and a phone finishes the install.
+`config.h` carries no WiFi credentials at all: the node's flash store is
+the only credential source, and the node knows WHERE it is in its life. The
+setup WiFi opens exactly when the first install is not complete — never
+again on a mere outage.
 
 | When the setup WiFi opens | |
 | --- | --- |
-| Factory state: no credentials in flash AND none compiled in | immediately after boot, and it serves until the form is saved — however long that takes |
-| Fallback: credentials exist but the node has joined NOTHING for 5 minutes (`WIFI_FALLBACK_SETUP_MS`) | in bounded windows of 10 minutes (`SETUP_SERVE_MAX_MS`); between windows the normal scan/connect flow resumes, so a temporary outage heals itself and a working node is never taken over for long |
+| The node has NEVER joined a stored network (`provisioned` flag unset in flash): factory state, or credentials saved but never connected with | immediately after boot, and it serves until the form is saved — however long that takes |
+| SETUP_MODE armed from the dashboard (the maintenance switch below) | immediately after boot, regardless of the provisioned flag; the armed flag clears itself when the setup form saves |
+| A provisioned node (first install complete) that lost its WiFi | NEVER — it retries with the normal scan/connect flow; no captive portal reappears where anyone nearby could join it |
 
 How the first install goes:
 
@@ -205,17 +208,26 @@ Details worth knowing:
   carry: a per-session CSRF token on the POST, strict request parsing with
   size caps, security headers, HTML-escaped output, and passwords are never
   echoed back into the page.
-- The flash store OVERRIDES the `config.h` list (precedence: setup page →
-  compiled-in). To start a node over from scratch, erase the flash
+- The flash store is the ONLY credential source (v2 — there is no compiled
+  list anymore). The store also carries two flags: `provisioned` (set the
+  moment the node's first WiFi connect succeeds, so a power cut right after
+  cannot resurrect the setup WiFi) and `setup-armed` (cleared by the setup
+  form's save). To start a node over from scratch, erase the flash
   (`esptool erase_flash`, or the IDE's "Erase Flash: All") — reflashing the
   sketch alone does NOT clear the store, which is what keeps a working node
   working across updates.
-- The setup WiFi never opens while the node is connected and healthy; and a
-  node with a full store that merely lost its link uses the normal retry
-  flow for `WIFI_FALLBACK_SETUP_MS` before any window opens. The setup
-  WiFi's own password is public (it ships in the repository) — the gate
-  keeps drive-by neighbours out, and the page can only write the WiFi list,
-  nothing else.
+- **Re-entering setup deliberately (SETUP_MODE, v2):** the dashboard's
+  Settings page has a "WiFi setup re-entry" maintenance switch. While it is
+  ON, every node that (re)boots opens its setup WiFi instead of connecting;
+  the setup form's save clears the armed flag on that node. Turn the switch
+  on, power-cycle the ONE node to re-provision, save its WiFi, then turn the
+  switch back off — it is fleet-wide by design (the relay's settings are one
+  set), so treat it as a wrench, not a switch you leave on.
+- The setup WiFi never opens while the node is connected and healthy, and
+  never on a provisioned node in a WiFi outage (that outage case is exactly
+  what v2 removed). The setup WiFi's own password is public (it ships in
+  the repository) — the gate keeps drive-by neighbours out, and the page
+  can only write the WiFi list, nothing else.
 
 ## 5. OTA firmware updates
 
@@ -267,8 +279,8 @@ Details worth knowing:
 | Toggle shows "delivered to 0" | no node online right now — offline nodes catch up the moment they reconnect (desired state is persisted). |
 | OTA never updates | Firmware page shows what the relay serves; node logs show each check. A refused upload means the file is not an ESP image (missing 0xE9 header). |
 | Dashboard shows "relay unreachable" | the relay service is not running or `relay_url`/`relay_key` in `config.php` do not match the relay's `config.js`. |
-| The `espnode-setup-…` WiFi does not appear | the node has usable credentials (flash store or `config.h`) and is trying to join them — the setup WiFi opens only from the factory state, or after 5 minutes (`WIFI_FALLBACK_SETUP_MS`) without ANY successful join. The serial monitor shows which list it booted with. |
-| Node joined nothing after a save | wrong password or hidden network — wait for the fallback window (setup WiFi reopens within 10 minutes), rejoin and fix the row; a blank password field keeps the stored one. To start over completely, erase the flash (section 4, "Details worth knowing"). |
+| The `espnode-setup-…` WiFi does not appear | the node is provisioned (it has completed a first successful WiFi connect, flag stored in flash) and is retrying — a provisioned node never auto-opens the setup WiFi (v2). To re-enter setup deliberately: Settings page → "WiFi setup re-entry" ON, power-cycle the node, save its WiFi, switch OFF. The serial monitor shows the boot decision. |
+| Node joined nothing after a save | wrong password or hidden network — arm SETUP_MODE on the dashboard, power-cycle the node, rejoin its setup WiFi and fix the row (a blank password field keeps the stored one); the save disarms the node again. To start over completely, erase the flash (section 4, "Details worth knowing"). |
 
 ## 8. Running the tests
 
