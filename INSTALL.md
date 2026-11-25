@@ -118,17 +118,24 @@ page refuses unsafe values (short passwords, the example `CHANGE-ME` keys)
 and locks itself once a valid `config.php` exists — it only ever runs before
 the first login exists.
 
-Prefer doing it by hand? The old way still works:
+Prefer doing it by hand instead of the setup page? Run the copy through
+sudo — the folder belongs to the web server user (see the chown above), so
+your own login cannot write into it:
 
 ```bash
 cd /var/www/html/espdash
-cp config.example.php config.php
-nano config.php
+sudo cp config.example.php config.php
+sudo chown www-data:www-data config.php && sudo chmod 640 config.php
+sudo nano config.php
 #   relay_url : http://127.0.0.1:8080 (the relay you installed above)
 #   relay_key : the SAME key as relayKey in the relay's config.js
 #   users     : generate a password hash and paste it:
 php -r "echo password_hash('YourSecretPassword', PASSWORD_DEFAULT);"
 ```
+
+The chown/chmod pair matches what the setup page writes: `config.php` ends
+up owned by `www-data` — readable by the web server, hidden from the other
+logins on the Pi.
 
 Open `http://<pi-ip>/espdash/`, sign in, and you are done. The dashboard is
 used over plain HTTP on a home LAN; put it behind TLS (or an SSH tunnel)
@@ -295,6 +302,7 @@ Details worth knowing:
 | `setup.php` says "could not create a temporary file" | the web server cannot write the `espdash` folder — `sudo chown www-data:www-data /var/www/html/espdash` (`www-data` is the Debian/Raspberry Pi OS default; `ps aux | grep php-fpm` shows yours), then reload the page. The page detects this itself and shows the same fix before you fill the form. |
 | The `espnode-setup-…` WiFi does not appear | the node is provisioned (it has completed a first successful WiFi connect, flag stored in flash) and is retrying — a provisioned node never auto-opens the setup WiFi. To re-enter setup deliberately: Settings page → "WiFi setup re-entry" ON, power-cycle the node, save its WiFi, switch OFF. The serial monitor shows the boot decision. |
 | Node joined nothing after a save | wrong password or hidden network — arm SETUP_MODE on the dashboard, power-cycle the node, rejoin its setup WiFi and fix the row (a blank password field keeps the stored one); the save disarms the node again. To start over completely, erase the flash (section 4, "Details worth knowing"). |
+| `cp config.example.php config.php` says "Permission denied" | the `espdash` folder belongs to the web server user, so your own login cannot write there — run the manual copy through sudo as shown in section 2 (or use the setup page, which writes the file as the web server user). |
 
 ## 8. Running the tests
 
