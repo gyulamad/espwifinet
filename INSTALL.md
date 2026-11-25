@@ -79,7 +79,7 @@ After=network-online.target
 WorkingDirectory=/opt/espwifinet/esp-relay
 ExecStart=/usr/bin/node server.js
 Restart=always
-User=madarasze   # <- your login user (`id -un`), NOT root: the relay writes its settings and logs here
+User=<your login user>   # <- from `id -un`, NOT root: the relay writes its settings and logs here
 
 [Install]
 WantedBy=multi-user.target
