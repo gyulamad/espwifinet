@@ -107,12 +107,11 @@ sudo cp -r php/espdash /var/www/html/espdash
 # the setup page writes config.php INTO this folder (temp file + rename),
 # so the WEB SERVER user needs write access to the folder itself - a
 # root-owned folder makes setup.php fail with "could not create a
-# temporary file" (#144):
+# temporary file":
 sudo chown www-data:www-data /var/www/html/espdash
 ```
 
-Then open `http://<pi-ip>/espdash/setup.php` — the **initial setup page**
-(#36, the safe-credentials bootstrap). It asks for the
+Then open `http://<pi-ip>/espdash/setup.php` — the **initial setup page**, the safe-credentials bootstrap. It asks for the
 relay URL, the relay key (checked against the live relay before anything is
 saved) and the first dashboard login, and writes `config.php` for you. The
 page refuses unsafe values (short passwords, the example `CHANGE-ME` keys)
@@ -135,17 +134,17 @@ Open `http://<pi-ip>/espdash/`, sign in, and you are done. The dashboard is
 used over plain HTTP on a home LAN; put it behind TLS (or an SSH tunnel)
 before exposing it anywhere beyond that.
 
-## 3. Flash a node (#131)
+## 3. Flash a node
 
 In the Arduino IDE (or arduino-cli):
 
 1. Install the **core for your board** (Boards Manager URL:
    `https://arduino.esp8266.com/stable/package_esp8266com_index.json`).
 2. Open `arduino/ESP_node/ESP_node.ino` — ONE sketch for every supported
-   ESP board (#131): each board's core defines its own board macro and
+   ESP board: each board's core defines its own board macro and
    `board.h` picks the includes, the chip id, the watchdog feed and the GPIO
    ceiling from it. No per-board code to maintain.
-3. There is NOTHING to edit (task #140): the sketch carries no config
+3. There is NOTHING to edit: the sketch carries no config
    file. The node's WiFi network(s) AND its relay address + fleet key are
    entered on the node's own setup page after the flash (section 4) and
    stored in the node's flash; the device id derives from the chip id.
@@ -154,7 +153,7 @@ In the Arduino IDE (or arduino-cli):
    relay connection there, and every log line also appears on the
    dashboard's Logs page.
 
-**Multi-wifi (#36, #138):** the node knows a LIST of networks and always
+**Multi-wifi:** the node knows a LIST of networks and always
 (re)connects to the strongest one it can see — the WiFiMulti pattern. On
 the setup page, "Add another network" adds a row per network (different
 floors, rooms or extenders); every row has its own Remove button. The
@@ -177,7 +176,7 @@ On/Off toggle drives on every node. Default is GPIO 5 (D1 on NodeMCU/Wemos).
 Avoid 0/1/2/3/15 (boot/serial strap pins) unless you know the wiring — the
 settings page warns about them.
 
-## 4. First install over the air (no cables, #135)
+## 4. First install over the air (no cables)
 
 The node carries no config file at all: its flash store is the only
 credential and relay-configuration source, and the node knows WHERE it is
@@ -223,15 +222,14 @@ Details worth knowing:
   carry: a per-session CSRF token on the POST, strict request parsing with
   size caps, security headers, HTML-escaped output, and passwords are never
   echoed back into the page.
-- The flash store is the ONLY credential source (v2 — there is no compiled
-  list anymore). The store also carries two flags: `provisioned` (set the
+- The flash store is the ONLY credential source. The store also carries two flags: `provisioned` (set the
   moment the node's first WiFi connect succeeds, so a power cut right after
   cannot resurrect the setup WiFi) and `setup-armed` (cleared by the setup
   form's save). To start a node over from scratch, erase the flash
   (`esptool erase_flash`, or the IDE's "Erase Flash: All") — reflashing the
   sketch alone does NOT clear the store, which is what keeps a working node
   working across updates.
-- **Re-entering setup deliberately (SETUP_MODE, v2):** the dashboard's
+- **Re-entering setup deliberately (SETUP_MODE):** the dashboard's
   Settings page has a "WiFi setup re-entry" maintenance switch. While it is
   ON, every node that (re)boots opens its setup WiFi instead of connecting;
   the setup form's save clears the armed flag on that node. Turn the switch
@@ -239,8 +237,7 @@ Details worth knowing:
   switch back off — it is fleet-wide by design (the relay's settings are one
   set), so treat it as a wrench, not a switch you leave on.
 - The setup WiFi never opens while the node is connected and healthy, and
-  never on a provisioned node in a WiFi outage (that outage case is exactly
-  what v2 removed). The setup WiFi's own password is public (it ships in
+  never on a provisioned node in a WiFi outage. The setup WiFi's own password is public (it ships in
   the repository) — the gate keeps drive-by neighbours out, and the page
   can only write the WiFi list, nothing else.
 
@@ -295,8 +292,8 @@ Details worth knowing:
 | Toggle shows "delivered to 0" | no node online right now — offline nodes catch up the moment they reconnect (desired state is persisted). |
 | OTA never updates | Firmware page shows what the relay serves; node logs show each check. A refused upload means the file is not an ESP image (missing 0xE9 header). |
 | Dashboard shows "relay unreachable" | the relay service is not running or `relay_url`/`relay_key` in `config.php` do not match the relay's `config.js`. |
-| `setup.php` says "could not create a temporary file" | the web server cannot write the `espdash` folder — `sudo chown www-data:www-data /var/www/html/espdash` (`www-data` is the Debian/Raspberry Pi OS default; `ps aux | grep php-fpm` shows yours), then reload the page. The page detects this itself now (#144) and shows the same fix before you fill the form. |
-| The `espnode-setup-…` WiFi does not appear | the node is provisioned (it has completed a first successful WiFi connect, flag stored in flash) and is retrying — a provisioned node never auto-opens the setup WiFi (v2). To re-enter setup deliberately: Settings page → "WiFi setup re-entry" ON, power-cycle the node, save its WiFi, switch OFF. The serial monitor shows the boot decision. |
+| `setup.php` says "could not create a temporary file" | the web server cannot write the `espdash` folder — `sudo chown www-data:www-data /var/www/html/espdash` (`www-data` is the Debian/Raspberry Pi OS default; `ps aux | grep php-fpm` shows yours), then reload the page. The page detects this itself and shows the same fix before you fill the form. |
+| The `espnode-setup-…` WiFi does not appear | the node is provisioned (it has completed a first successful WiFi connect, flag stored in flash) and is retrying — a provisioned node never auto-opens the setup WiFi. To re-enter setup deliberately: Settings page → "WiFi setup re-entry" ON, power-cycle the node, save its WiFi, switch OFF. The serial monitor shows the boot decision. |
 | Node joined nothing after a save | wrong password or hidden network — arm SETUP_MODE on the dashboard, power-cycle the node, rejoin its setup WiFi and fix the row (a blank password field keeps the stored one); the save disarms the node again. To start over completely, erase the flash (section 4, "Details worth knowing"). |
 
 ## 8. Running the tests

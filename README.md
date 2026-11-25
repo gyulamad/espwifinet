@@ -4,7 +4,7 @@
 
 Base architecture for switching a GPIO leg on a fleet of ESP nodes from
 one dashboard toggle — the starting point for later home-automation
-development (project #3 · Home automation, task #33).
+development (the Home automation project).
 
 - **Relay** (`nodejs/esp-relay/`, Node.js on a Raspberry Pi): one raw TCP
   hub the nodes dial into (works behind WiFi extenders/NAT), one HTTP API
@@ -23,7 +23,7 @@ development (project #3 · Home automation, task #33).
   framed-JSON protocol, status reports (SSID, RSSI, heap, uptime), in-band
   remote logging with repeat suppression and a settings-driven level
   filter, OTA self-update, settings-driven GPIO, and a cable-free first
-  install (#135): a node whose first WiFi connect has never happened opens
+  install: a node whose first WiFi connect has never happened opens
   its own `espnode-setup-xxxxxx` WiFi where a phone picks the networks; the
   flash store is the node's only credential list.
 - **Tests** (`./run_tests.sh`): Node unit + e2e (real relay, simulated
@@ -36,13 +36,13 @@ Design decisions worth knowing (each documented in the code):
 - Commands travel **down the node's own outbound connection**; nodes that
   were offline during a toggle catch up on reconnect because the relay
   re-sends the persisted desired state on every connect.
-- WiFi is a LIST, not a value (#36): the node (re)connects to the strongest
+- WiFi is a LIST, not a value: the node (re)connects to the strongest
   known network and roams only when the current link degrades, so a healthy
   link is never churned. The setup wizard and the settings page gather
-  every previously hard-coded value; the relay's ports/keys stay in
+  every value the install needs; the relay's ports/keys stay in
   config.js on purpose — they need a restart, so the page shows them
   read-only instead.
-- The node carries NO config file at all (#140): the sketch has nothing to
+- The node carries NO config file at all: the sketch has nothing to
   edit — the WiFi list AND the relay address + fleet key live in its flash
   store, written by the node's own setup page, so a flashed binary plus one
   phone visit is a complete install and the end user never touches source
@@ -59,9 +59,9 @@ Design decisions worth knowing (each documented in the code):
 - Security baseline: shared secrets for both hops (node→relay, PHP→relay,
   constant-time compared), session login with CSRF tokens and CSP for the
   dashboard, length caps on every wire buffer, HTML escaping via one
-  helper, no shell exec anywhere. The node's setup page (task #135) carries
+  helper, no shell exec anywhere. The node's setup page carries
   the same baseline: WPA2-gated AP, per-session CSRF token, strict bounded
   request parsing, security headers, and passwords are never echoed.
 
 See **INSTALL.md** for setup (Pi, PHP, flashing, OTA, troubleshooting) and
-**acronym.md** (#50) for every acronym the docs use.
+**acronym.md** for every acronym the docs use.
