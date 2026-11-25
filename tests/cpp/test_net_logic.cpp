@@ -10,6 +10,7 @@
 #include <string>
 
 #include "../stubs/WiFiClient.h" // pulls in Arduino.h + Update stub
+#include "../stubs/EEPROM.h"     // the credential store's flash surface (#135)
 
 // stub singletons the headers reference
 std::string Stream::serialOut;
@@ -19,6 +20,8 @@ static UpdateStub updateInstance;
 EspStub& ESP = espInstance;
 WiFiStub& WiFi = wifiInstance;
 UpdateStub Update = updateInstance;
+Stream Serial;         // the real core's global port (stub Arduino.h declares it)
+EEPROMClass EEPROM;  // the credential store's flash region (#135)
 static unsigned long fakeNow = 1000;
 unsigned long millis() { return fakeNow; }
 void delay(unsigned long) {}
@@ -27,6 +30,8 @@ void delay(unsigned long) {}
 #include "../../arduino/ESP_node/net.h"
 #include "../../arduino/ESP_node/wifi.h"
 #include "../../arduino/ESP_node/ota.h"
+#include "../../arduino/ESP_node/wifi_store.h"
+#include "../../arduino/ESP_node/setup_logic.h"
 
 // ── #131: the board selection resolved (one build per board, same sources).
 // The desktop build defines ESP8266 or ESP32 explicitly; on hardware the
@@ -384,6 +389,486 @@ static void testMinLogFilter() {
   assert(!lg.pending());
 }
 
+// ── task #135: the flash-held WiFi credential store (wifi_store.h) ──
+
+class RamStoreBackend : public espnet::WifiStoreBackend {
+ public:
+  bool read(char* buf, size_t max) override {
+    if (blank_ || max < data_.size()) return false;
+    for (size_t i = 0; i < data_.size(); ++i) buf[i] = data_[i];
+    return true;
+  }
+  bool write(const char* buf, size_t len) override {
+    if (failWrite_) return false;
+    data_.assign(buf, len);
+    blank_ = false;
+    return true;
+  }
+  std::string data_;
+  bool blank_ = true;
+  bool failWrite_ = false;
+};
+
+static void testWifiStore() {
+  using espnet::WifiStoreNet;
+  WifiStoreNet nets[espnet::WIFI_STORE_MAX_NETS];
+  char blob[espnet::WIFI_STORE_REGION_MAX];
+
+  // round-trip, open network included
+  nets[0].ssid = "Home";
+  nets[0].pass = "secret12";
+  nets[1].ssid = "Cafe";
+  nets[1].pass = ""; // open
+  const int len = espnet::wifiStoreSerialize(nets, 2, blob, sizeof(blob));
+  assert(len > 0);
+  WifiStoreNet back[espnet::WIFI_STORE_MAX_NETS];
+  assert(espnet::wifiStoreParse(blob, (size_t)len, back, espnet::WIFI_STORE_MAX_NETS) == 2);
+  assert(back[0].ssid == "Home" && back[0].pass == "secret12");
+  assert(back[1].ssid == "Cafe" && back[1].pass.empty());
+
+  // validation refuses what the radio or the framing could not carry
+  std::string longSsid(33, 'a');
+  nets[0].ssid = longSsid.c_str();
+  assert(espnet::wifiStoreSerialize(nets, 2, blob, sizeof(blob)) < 0);
+  std::string tabSsid = "a\tb";
+  nets[0].ssid = tabSsid.c_str();
+  assert(espnet::wifiStoreSerialize(nets, 2, blob, sizeof(blob)) < 0);
+  std::string shortPass = "1234567";
+  nets[0].ssid = "Home";
+  nets[0].pass = shortPass.c_str();
+  assert(espnet::wifiStoreSerialize(nets, 2, blob, sizeof(blob)) < 0);
+  std::string longPass(64, 'x');
+  nets[0].pass = longPass.c_str();
+  assert(espnet::wifiStoreSerialize(nets, 2, blob, sizeof(blob)) < 0);
+  std::string nlPass = "abc\ndef";
+  nets[0].pass = nlPass.c_str();
+  assert(espnet::wifiStoreSerialize(nets, 2, blob, sizeof(blob)) < 0);
+  nets[0].pass = "secret12";
+
+  // the parser is all-or-nothing: garbage, a cut-off entry, a bad entry, a
+  // capacity overflow all answer 0 (the compiled list takes over)
+  assert(espnet::wifiStoreParse("GARBAGE", 7, back, espnet::WIFI_STORE_MAX_NETS) == 0);
+  assert(espnet::wifiStoreParse("", 0, back, espnet::WIFI_STORE_MAX_NETS) == 0);
+  assert(espnet::wifiStoreParse(blob, (size_t)len - 1, back, espnet::WIFI_STORE_MAX_NETS) == 0); // cut-off
+  std::string badEntry = std::string("Home\t1234567\n"); // 7-char pass inside the blob
+  assert(espnet::wifiStoreParse(badEntry.data(), badEntry.size(), back, espnet::WIFI_STORE_MAX_NETS) == 0);
+  std::string six = std::string("a1\tp1\na2\tp2\na3\tp3\na4\tp4\na5\tp5\na6\tp6\n");
+  assert(espnet::wifiStoreParse(six.data(), six.size(), back, espnet::WIFI_STORE_MAX_NETS) == 0); // > 5 slots
+
+  // the store: save+load round-trip, blank and damaged regions, failed write
+  RamStoreBackend backend;
+  espnet::WifiStore store;
+  store.begin(&backend);
+  WifiStoreNet rows[espnet::WIFI_STORE_MAX_NETS];
+  rows[0].ssid = "Home";
+  rows[0].pass = "secret12";
+  assert(store.load(rows, espnet::WIFI_STORE_MAX_NETS) == 0); // blank region
+  assert(store.save(nets, 2));
+  assert(store.load(back, espnet::WIFI_STORE_MAX_NETS) == 2);
+  assert(back[0].ssid == "Home" && back[1].pass.empty());
+  backend.data_ = "totally-garbage-region-bytes"; // wrong magic
+  assert(store.load(back, espnet::WIFI_STORE_MAX_NETS) == 0);
+  backend.failWrite_ = true;
+  assert(!store.save(nets, 2)); // nothing was changed
+  backend.failWrite_ = false;
+  // save refuses invalid input before touching the backend
+  WifiStoreNet bad[1];
+  bad[0].ssid = "Home";
+  bad[0].pass = "short";
+  assert(!store.save(bad, 1));
+}
+
+// ── task #135: the setup decisions (setup_logic.h) ──
+
+static void testSetupDecisions() {
+  // the setup WiFi's name: "espnode-setup-" + the last 3 chip-id bytes,
+  // lowercase hex, unique per board, no radio call needed
+  std::string ssid;
+  assert(espnet::setupSsid(0xA1B2C3D4u, ssid));
+  assert(ssid == "espnode-setup-b2c3d4");
+  assert(espnet::setupSsid(0x0000FFu, ssid) && ssid == "espnode-setup-0000ff");
+  assert(ssid.size() <= espnet::WIFI_STORE_SSID_MAX);
+  assert(!espnet::setupSsid(0u, ssid)); // a broken chip id must not open a nameless network
+
+  // the CSRF token: 32 lowercase hex characters, deterministic per input,
+  // different inputs differ
+  const std::string t1 = espnet::csrfTokenFromRandom(0x01234567u, 0x89abcdefu, 0xdeadbeefu, 0x11223344u);
+  assert(t1.size() == 32);
+  for (size_t i = 0; i < t1.size(); ++i) {
+    const bool hex = (t1[i] >= '0' && t1[i] <= '9') || (t1[i] >= 'a' && t1[i] <= 'f');
+    assert(hex);
+  }
+  assert(t1 == espnet::csrfTokenFromRandom(0x01234567u, 0x89abcdefu, 0xdeadbeefu, 0x11223344u));
+  assert(t1 != espnet::csrfTokenFromRandom(0x01234567u, 0x89abcdefu, 0xdeadbeefu, 0x11223345u));
+
+  // store-vs-compiled decision: a valid store wins, anything damaged means
+  // the compiled list, nothing anywhere means setup mode
+  espnet::WifiStoreNet rows[espnet::WIFI_STORE_MAX_NETS];
+  rows[0].ssid = "Home";
+  rows[0].pass = "secret12";
+  assert(espnet::effectiveNetworksCount(rows, 1) == 1);
+  assert(espnet::effectiveNetworksCount(rows, 0) == 0);
+  assert(espnet::effectiveNetworksCount(nullptr, 0) == 0);
+  rows[1].ssid = "a\tb"; // one damaged row poisons the list
+  rows[1].pass = "abcdefgh";
+  assert(espnet::effectiveNetworksCount(rows, 2) == 0);
+}
+
+// ── task #135: the setup form (SetupForm) ──
+
+static const char* const kToken = "0123456789abcdef0123456789abcdef"; // 32 hex, >= WIFI_SETUP_MIN_TOKEN
+
+static std::string saveBody(const std::string& rowFields) {
+  return std::string("csrf=") + kToken + "&" + rowFields;
+}
+
+static void testSetupForm() {
+  RamStoreBackend backend;
+  espnet::WifiStore store;
+  store.begin(&backend);
+  espnet::WifiStoreNet stored[espnet::WIFI_STORE_MAX_NETS];
+  espnet::SetupForm form("espnode-setup-aabbcc", store, stored, 0, kToken);
+
+  // first visit: the page carries the token, the empty rows, no script
+  espnet::HttpReply page = form.handle("GET", "/", "");
+  assert(page.status == 200);
+  assert(page.body.find("name=\"csrf\" value=\"" + std::string(kToken) + "\"") != std::string::npos);
+  assert(page.body.find("network name 1") != std::string::npos);
+  assert(page.body.find("<script") == std::string::npos);
+  bool hasCsp = false;
+  for (size_t i = 0; i < page.headers.size(); ++i) {
+    if (page.headers[i].first == "Content-Security-Policy") hasCsp = true;
+    if (page.headers[i].first == "Location") assert(false); // no redirect on the form
+  }
+  assert(hasCsp);
+
+  // every POST is guarded by the per-session token (constant-time compare)
+  espnet::HttpReply r = form.handle("POST", "/save", "w.ssid.1=Home&w.pass.1=abcdefgh");
+  assert(r.status == 403); // missing token
+  r = form.handle("POST", "/save", "csrf=short&w.ssid.1=Home&w.pass.1=abcdefgh");
+  assert(r.status == 403); // token shorter than the minimum
+  r = form.handle("POST", "/save", "csrf=fedcba9876543210fedcba9876543210&w.ssid.1=Home&w.pass.1=abcdefgh");
+  assert(r.status == 403); // wrong token
+  assert(backend.blank_);  // nothing was stored by the refused posts
+
+  // a valid save: all-or-nothing, the store is written, the node restarts
+  r = form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=abcdefgh"));
+  assert(r.status == 200);
+  assert(r.body.find("restarting") != std::string::npos);
+  assert(form.saved());
+  assert(store.load(stored, espnet::WIFI_STORE_MAX_NETS) == 1);
+  assert(stored[0].ssid == "Home" && stored[0].pass == "abcdefgh");
+
+  // after the save the session is done: further posts are refused, the page
+  // turns into the restarting notice
+  assert(form.handle("POST", "/save", saveBody("w.ssid.1=x&w.pass.1=abcdefgh")).status == 409);
+  assert(form.handle("GET", "/", "").status == 200);
+  assert(form.handle("GET", "/", "").body.find("restarting") != std::string::npos);
+
+  // a second form on a fresh store: validation paths
+  RamStoreBackend backend2;
+  espnet::WifiStore store2;
+  store2.begin(&backend2);
+  espnet::SetupForm form2("espnode-setup-ddeeff", store2, stored, 0, kToken);
+
+  // a name without a password is refused, nothing stored, input brought back
+  r = form2.handle("POST", "/save", saveBody("w.ssid.1=Home"));
+  assert(r.status == 422);
+  assert(r.body.find("type its password") != std::string::npos);
+  assert(r.body.find("value=\"Home\"") != std::string::npos); // the name is preserved
+  assert(backend2.blank_);
+  // open network and a typed password are mutually exclusive
+  assert(form2.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=abcdefgh&w.open.1=1")).status == 422);
+  assert(form2.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=1234567")).status == 422); // 7 chars
+  assert(form2.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=" + std::string(64, 'x'))).status == 422);
+  // a password without a name is called out
+  r = form2.handle("POST", "/save", saveBody("w.pass.1=abcdefgh"));
+  assert(r.status == 422);
+  assert(r.body.find("network name is empty") != std::string::npos);
+  // no row at all: the node would have nothing to join with
+  assert(form2.handle("POST", "/save", saveBody("")).status == 422);
+  assert(backend2.blank_);
+
+  // an open network row stores an empty password
+  assert(form2.handle("POST", "/save", saveBody("w.ssid.1=Cafe&w.open.1=1")).status == 200);
+  assert(store2.load(stored, espnet::WIFI_STORE_MAX_NETS) == 1);
+  assert(stored[0].ssid == "Cafe" && stored[0].pass.empty());
+
+  // a third form on a store that already holds a password: a blank password
+  // field keeps the stored one (editing one row does not retyping the rest)
+  RamStoreBackend backend3;
+  espnet::WifiStore store3;
+  store3.begin(&backend3);
+  espnet::WifiStoreNet existing[1];
+  existing[0].ssid = "Home";
+  existing[0].pass = "secret12";
+  assert(store3.save(existing, 1));
+  espnet::SetupForm form3("espnode-setup-112233", store3, existing, 1, kToken);
+  espnet::HttpReply page3 = form3.handle("GET", "/", "");
+  assert(page3.body.find("value=\"Home\"") != std::string::npos);
+  assert(page3.body.find("blank keeps it") != std::string::npos);
+  assert(page3.body.find("secret12") == std::string::npos); // the password is never echoed
+  assert(form3.handle("POST", "/save", saveBody("w.ssid.1=Home&w.ssid.2=Cafe&w.open.2=1")).status == 200);
+  assert(store3.load(stored, espnet::WIFI_STORE_MAX_NETS) == 2);
+  assert(stored[0].ssid == "Home" && stored[0].pass == "secret12"); // kept
+  assert(stored[1].ssid == "Cafe" && stored[1].pass.empty());
+
+  // echoed values are HTML-escaped: a stored ssid with markup cannot inject
+  RamStoreBackend backend4;
+  espnet::WifiStore store4;
+  store4.begin(&backend4);
+  espnet::WifiStoreNet evil[1];
+  evil[0].ssid = "<img src=x>";
+  evil[0].pass = "";
+  assert(store4.save(evil, 1));
+  espnet::SetupForm form4("espnode-setup-445566", store4, evil, 1, kToken);
+  espnet::HttpReply page4 = form4.handle("GET", "/", "");
+  assert(page4.body.find("<img") == std::string::npos);
+  assert(page4.body.find("&lt;img") != std::string::npos);
+
+  // strict parsing and the caps
+  espnet::SetupForm form5("espnode-setup-aabbcc", store, stored, 0, kToken);
+  assert(form5.handle("POST", "/save", saveBody("csrf=" + std::string(kToken) + "&csrf=" + kToken)).status == 400); // name twice
+  assert(form5.handle("POST", "/save", saveBody("w.ssid.1")).status == 400); // piece without '='
+  assert(form5.handle("POST", "/save", saveBody("bad name%3D1=2")).status == 400); // space in the name
+  std::string big = saveBody("w.ssid.1=" + std::string(5000, 'a'));
+  assert(form5.handle("POST", "/save", big).status == 413); // over the body cap
+  assert(form5.handle("POST", "/save", saveBody("w.ssid.1=Home%")).status == 400); // cut %-escape
+  assert(form5.handle("POST", "/save", saveBody("w.ssid.1=%00")).status == 400); // NUL byte
+
+  // routing: captive-portal probes redirect to the form, everything else
+  assert(form5.handle("GET", "/generate_204", "").status == 302);
+  assert(form5.handle("GET", "/hotspot-detect.html", "").status == 302);
+  {
+    espnet::HttpReply probe = form5.handle("GET", "/generate_204", "");
+    bool loc = false;
+    for (size_t i = 0; i < probe.headers.size(); ++i) {
+      if (probe.headers[i].first == "Location") {
+        loc = probe.headers[i].second == "http://192.168.4.1/";
+      }
+    }
+    assert(loc);
+  }
+  assert(form5.handle("GET", "/nope", "").status == 404);
+  assert(form5.handle("POST", "/", "").status == 405);     // the page wants GET
+  assert(form5.handle("GET", "/save", "").status == 405);  // the save wants POST
+  assert(form5.handle("POST", "/save?x=1", saveBody("w.ssid.1=Cafe&w.open.1=1")).status == 200); // query ignored
+}
+
+// ── task #135: the setup session (SetupSession) ──
+
+class FakeNet : public espnet::ISetupNet {
+ public:
+  bool startAccessPoint(const std::string& ssid, const std::string& password) override {
+    ++startCalls_;
+    lastSsid_ = ssid;
+    lastPassword_ = password;
+    if (failNext_ > 0) {
+      --failNext_;
+      return false;
+    }
+    up_ = true;
+    return true;
+  }
+  void poll() override { ++polls_; }
+  void stop() override { ++stops_; up_ = false; }
+  bool up_ = false;
+  int startCalls_ = 0, polls_ = 0, stops_ = 0, failNext_ = 0;
+  std::string lastSsid_, lastPassword_;
+};
+
+class FakeLog : public espnet::ISetupLog {
+ public:
+  void line(const std::string& text) override { lines_.push_back(text); }
+  std::vector<std::string> lines_;
+};
+
+static void testSetupSession() {
+  using espnet::SetupSessionConfig;
+  using espnet::SetupStep;
+
+  // a store + form pair the session watches; the save arrives mid-test
+  RamStoreBackend backend;
+  espnet::WifiStore store;
+  store.begin(&backend);
+  espnet::WifiStoreNet none[1];
+  espnet::SetupForm form("espnode-setup-aabbcc", store, none, 0, kToken);
+  FakeNet net;
+  FakeLog log;
+
+  SetupSessionConfig cfg;
+  cfg.ssid = "espnode-setup-aabbcc";
+  cfg.password = ESPNET_SETUP_AP_PASSWORD;
+  cfg.graceMs = 1500;
+  cfg.retryMs = 5000;
+  cfg.serveCapMs = 0; // factory case: serve until saved, however long it takes
+
+  espnet::SetupSession session(cfg, net, form, &log);
+
+  // start: the AP comes up with the SSID and the password, no timeouts
+  assert(session.step(1000) == SetupStep::Running);
+  assert(net.up_ && net.startCalls_ == 1);
+  assert(net.lastSsid_ == "espnode-setup-aabbcc");
+  assert(net.lastPassword_ == std::string(ESPNET_SETUP_AP_PASSWORD));
+  assert(session.serving());
+  assert(session.step(1000 + 3600000) == SetupStep::Running); // an hour later: still serving
+  bool announced = false;
+  for (size_t i = 0; i < log.lines_.size(); ++i) {
+    if (log.lines_[i].find("is up") != std::string::npos) announced = true;
+  }
+  assert(announced);
+  // the WiFi password is never logged
+  for (size_t i = 0; i < log.lines_.size(); ++i) {
+    assert(log.lines_[i].find(std::string(ESPNET_SETUP_AP_PASSWORD)) == std::string::npos);
+  }
+
+  // the form saves through its own HTTP path: the session gives the browser
+  // the reply (grace), stops the AP, then answers Restart
+  assert(form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=abcdefgh")).status == 200);
+  assert(session.step(3605000) == SetupStep::Running);   // inside the grace window
+  assert(net.up_);                                       // still serving so the reply gets out
+  assert(session.step(3605000 + 1499) == SetupStep::Running);
+  assert(session.step(3605000 + 1500) == SetupStep::Restart);
+  assert(!net.up_ && net.stops_ >= 1);
+  session.stop(); // idempotent
+  assert(net.stops_ >= 1);
+
+  // a failed AP start is retried after retryMs, never silently given up
+  RamStoreBackend backend2;
+  espnet::WifiStore store2;
+  store2.begin(&backend2);
+  espnet::SetupForm form2("espnode-setup-ddeeff", store2, none, 0, kToken);
+  FakeNet net2;
+  net2.failNext_ = 2;
+  SetupSessionConfig cfg2 = cfg;
+  espnet::SetupSession session2(cfg2, net2, form2, &log);
+  assert(session2.step(0) == SetupStep::Running);
+  assert(!net2.up_ && net2.startCalls_ == 1 && net2.stops_ >= 1); // cleaned up for the retry
+  assert(session2.step(4000) == SetupStep::Running);  // inside retryMs: waiting
+  assert(session2.step(5000) == SetupStep::Running);  // retry: fails again
+  assert(session2.step(10000) == SetupStep::Running); // retry: succeeds
+  assert(net2.up_ && net2.startCalls_ == 3 && session2.serving());
+
+  // the fallback window: serveCapMs bounds the serving; its expiry answers
+  // Handback and leaves the WiFi clean for the normal flow (no restart)
+  RamStoreBackend backend3;
+  espnet::WifiStore store3;
+  store3.begin(&backend3);
+  espnet::SetupForm form3("espnode-setup-112233", store3, none, 0, kToken);
+  FakeNet net3;
+  SetupSessionConfig cfg3 = cfg;
+  cfg3.serveCapMs = 60000;
+  espnet::SetupSession session3(cfg3, net3, form3, &log);
+  assert(session3.step(100000) == SetupStep::Running);
+  assert(session3.step(100000 + 59999) == SetupStep::Running);
+  assert(session3.step(100000 + 60000) == SetupStep::Handback);
+  assert(!net3.up_ && net3.stops_ >= 1);
+  assert(!session3.serving());
+}
+
+// ── task #135: the bounded request reader (HttpRequestReader) ──
+
+static void testHttpRequestReader() {
+  using R = espnet::HttpRequestReader;
+  R reader;
+
+  // a plain GET
+  const std::string getReq = "GET / HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
+  assert(reader.feed(getReq.data(), getReq.size()) == R::Complete);
+  assert(reader.method() == "GET" && reader.target() == "/");
+  assert(reader.host() == "192.168.4.1");
+
+  // a POST body arriving in pieces (the socket rarely delivers it all at once)
+  reader.reset();
+  const std::string head = "POST /save HTTP/1.1\r\nHost: 192.168.4.1\r\nContent-Length: 11\r\n\r\n";
+  assert(reader.feed(head.data(), 10) == R::NeedMore);
+  assert(reader.feed(head.data() + 10, head.size() - 10) == R::NeedMore);
+  assert(reader.feed("csrf=abcde", 10) == R::NeedMore);
+  assert(reader.feed("fgh&x=1", 7) == R::Complete);
+  assert(reader.method() == "POST" && reader.target() == "/save");
+  assert(reader.body() == "csrf=abcdef"); // cut exactly at Content-Length
+  assert(reader.body().size() == 11);
+
+  // a POST without Content-Length: 411
+  reader.reset();
+  assert(reader.feed("POST /save HTTP/1.1\r\nHost: x\r\n\r\n", 32) == R::Rejected);
+  assert(reader.rejectStatus() == 411);
+
+  // an announced body over the cap: 413, refused before the body is waited for
+  reader.reset();
+  std::string bigHead = "POST /save HTTP/1.1\r\nContent-Length: 999999\r\n\r\n";
+  assert(reader.feed(bigHead.data(), bigHead.size()) == R::Rejected);
+  assert(reader.rejectStatus() == 413);
+
+  // a request head over the cap: 431
+  reader.reset();
+  std::string longHead = "GET /";
+  longHead += std::string(3000, 'a');
+  longHead += " HTTP/1.1\r\n\r\n";
+  assert(reader.feed(longHead.data(), longHead.size()) == R::Rejected);
+  assert(reader.rejectStatus() == 431);
+
+  // chunked bodies are not read: 501
+  reader.reset();
+  std::string chunked = "POST /save HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
+  assert(reader.feed(chunked.data(), chunked.size()) == R::Rejected);
+  assert(reader.rejectStatus() == 501);
+
+  // two different Content-Length values: request smuggling, 400
+  reader.reset();
+  std::string smuggle = "POST /save HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 9\r\n\r\n";
+  assert(reader.feed(smuggle.data(), smuggle.size()) == R::Rejected);
+  assert(reader.rejectStatus() == 400);
+
+  // a bare LF in the head, a control byte, an uppercase-less method, a bad
+  // version, a target that is not a path: 400
+  reader.reset();
+  std::string bareLf = "GET / HTTP/1.1\nHost: x\r\n\r\n";
+  assert(reader.feed(bareLf.data(), bareLf.size()) == R::Rejected && reader.rejectStatus() == 400);
+  reader.reset();
+  std::string ctrl = "GET /\x01 HTTP/1.1\r\n\r\n";
+  assert(reader.feed(ctrl.data(), ctrl.size()) == R::Rejected && reader.rejectStatus() == 400);
+  reader.reset();
+  std::string lowerMethod = "get / HTTP/1.1\r\n\r\n";
+  assert(reader.feed(lowerMethod.data(), lowerMethod.size()) == R::Rejected && reader.rejectStatus() == 400);
+  reader.reset();
+  std::string badVersion = "GET / HTTP/9\r\n\r\n";
+  assert(reader.feed(badVersion.data(), badVersion.size()) == R::Rejected && reader.rejectStatus() == 400);
+  reader.reset();
+  std::string noSlash = "GET x HTTP/1.1\r\n\r\n";
+  assert(reader.feed(noSlash.data(), noSlash.size()) == R::Rejected && reader.rejectStatus() == 400);
+
+  // more headers than the cap: 431
+  reader.reset();
+  std::string many = "GET / HTTP/1.1\r\n";
+  for (int i = 0; i < 40; ++i) many += "X-a" + std::to_string(i) + ": 1\r\n";
+  many += "\r\n";
+  assert(reader.feed(many.data(), many.size()) == R::Rejected && reader.rejectStatus() == 431);
+
+  // a rejected reader stays rejected (no partial re-parses)
+  assert(reader.feed("GET / HTTP/1.1\r\n\r\n", 18) == R::Rejected);
+}
+
+// ── task #135: the WHOLE sketch compiles and boots against the stubs ──
+// (setup_ap.h / wifi_store_hw.h / the .ino are hardware glue the suite never
+// compiled before; with the AP/DNS/EEPROM stub surface they ride the same
+// desktop build, so a wiring typo can no longer wait for an arduino-cli run
+// to be caught — the same class of escape the #131 v2 work closed.)
+#include "../../arduino/ESP_node/ESP_node.ino"
+
+static void testSketchCompiles() {
+  setup(); // the stub boot: blank store, compiled config.h list, no portal
+  assert(effectiveCount == 1);
+  assert(!portalActive);
+  assert(std::string(DEVICE).rfind("esp-", 0) == 0);
+  assert(std::string(effectiveNets[0].ssid) == "YOUR-WIFI-NAME");
+
+  // a few loop passes: the wifi state machine and the log queue run without
+  // touching the radio beyond what the stub drives
+  for (int i = 0; i < 3; ++i) loop();
+  assert(!ESP.restarted);
+}
+
 int main() {
   assertBoardSelection();
 
@@ -403,6 +888,18 @@ int main() {
   printf("PASS wifi multi\n");
   testOtaCompile();
   printf("PASS ota compile\n");
+  testWifiStore();
+  printf("PASS wifi store\n");
+  testSetupDecisions();
+  printf("PASS setup decisions\n");
+  testSetupForm();
+  printf("PASS setup form\n");
+  testSetupSession();
+  printf("PASS setup session\n");
+  testHttpRequestReader();
+  printf("PASS http request reader\n");
+  testSketchCompiles();
+  printf("PASS sketch compiles\n");
   printf("tests/cpp: all passed\n");
   return 0;
 }

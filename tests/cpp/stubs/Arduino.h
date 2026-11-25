@@ -64,6 +64,9 @@ class String {
 class Stream {
  public:
   virtual ~Stream() {}
+  void begin(unsigned long) {}  // HardwareSerial::begin (the real core's baud call)
+  void println() { serialOut += "\n"; }
+  void println(const char* s) { serialOut += s; serialOut += "\n"; }
   void printf(const char* fmt, ...) {
     char buf[512];
     va_list args;
@@ -74,6 +77,8 @@ class Stream {
   }
   static std::string serialOut;
 };
+
+extern Stream Serial;  // the real core's global serial port (the test TU defines it)
 
 class EspStub {
  public:
@@ -98,7 +103,9 @@ class EspStub {
 // (the test build defines the global `ESP` object itself)
 
 enum WifiStatus { WL_DISCONNECTED = 6, WL_CONNECTED = 3 };
+#define WIFI_OFF 0  // the real core's WiFiMode_t values (the setup glue, #135)
 #define WIFI_STA 1
+#define WIFI_AP 2
 #ifndef WIFI_SCAN_RUNNING
 #define WIFI_SCAN_RUNNING (-1)
 #endif
@@ -108,8 +115,9 @@ enum WifiStatus { WL_DISCONNECTED = 6, WL_CONNECTED = 3 };
 
 class IPAddressStub {
  public:
-  String toString() { return String("192.168.1.42"); }
+  String toString() const { return String("192.168.1.42"); }
 };
+using IPAddress = IPAddressStub;  // the real core's type name
 
 // WiFi stub: the connection surface net.h/ota.h use, plus the asynchronous
 // scan surface wifi.h drives (scanNetworks(true) → poll scanComplete() →
@@ -123,9 +131,24 @@ class WiFiStub {
   long RSSI(int i) { return (i >= 0 && i < scanCount) ? scanRssi[i] : 0; }
   IPAddressStub localIP() { return IPAddressStub(); }
   int status() { return wifiStatus; }
-  void mode(int) {}
+  bool mode(int) { return true; }  // the real WiFiClass::mode answers bool (the setup glue checks it)
   void begin(const char* ssid, const char*) { lastBeginSsid = ssid ? ssid : ""; }
   void disconnect(bool = false) { wifiStatus = WL_DISCONNECTED; }
+
+  // ── AP surface (#135): what the setup glue (setup_ap.h) drives ──
+  bool softAP(const char* ssid, const char* pass, int channel = 1, int hidden = 0, int maxStations = 4) {
+    (void)channel; (void)hidden; (void)maxStations;
+    lastSoftApSsid = ssid ? ssid : "";
+    lastSoftApPass = pass ? pass : "";
+    apUp = true;
+    return true;
+  }
+  IPAddressStub softAPIP() { return IPAddressStub(); }
+  void softAPdisconnect(bool) { apUp = false; }
+  void persistent(bool) {}
+  std::string lastSoftApSsid;
+  std::string lastSoftApPass;
+  bool apUp = false;
 
   // ── async scan emulation ──
   void scanNetworks(bool async) {

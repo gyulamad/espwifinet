@@ -23,3 +23,6 @@ enum esp_reset_reason_t {
 
 inline int& espResetReasonState() { static int v = ESP_RST_SW; return v; }
 inline int esp_reset_reason() { return espResetReasonState(); }
+
+// The hardware RNG the setup glue's CSRF token draws from (setup_ap.h, #135).
+inline uint32_t esp_random() { return 0x5EEDF00Du; }

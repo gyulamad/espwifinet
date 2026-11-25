@@ -169,7 +169,55 @@ On/Off toggle drives on every node. Default is GPIO 5 (D1 on NodeMCU/Wemos).
 Avoid 0/1/2/3/15 (boot/serial strap pins) unless you know the wiring — the
 settings page warns about them.
 
-## 4. OTA firmware updates
+## 4. First install over the air (no cables, #135)
+
+A node flashed with EMPTY `config.h` WiFi slots (the typical first install —
+no credentials edited into the sketch) does not sit silent: it opens its own
+setup WiFi and a phone finishes the install.
+
+| When the setup WiFi opens | |
+| --- | --- |
+| Factory state: no credentials in flash AND none compiled in | immediately after boot, and it serves until the form is saved — however long that takes |
+| Fallback: credentials exist but the node has joined NOTHING for 5 minutes (`WIFI_FALLBACK_SETUP_MS`) | in bounded windows of 10 minutes (`SETUP_SERVE_MAX_MS`); between windows the normal scan/connect flow resumes, so a temporary outage heals itself and a working node is never taken over for long |
+
+How the first install goes:
+
+1. Power the node. Its setup WiFi appears as **`espnode-setup-`** plus the
+   last 3 bytes of the chip id in lowercase hex, e.g. `espnode-setup-d4e5f6`
+   — unique per board, so several bare nodes never collide.
+2. Join it from a phone. The WPA2 password is **`espnode1234`** unless the
+   build overrides it (`ESPNET_SETUP_AP_PASSWORD` in `config.h`). The phone's
+   captive-portal popup opens the setup page by itself; otherwise browse to
+   **http://192.168.4.1/**.
+3. Fill one row per network: name, password — or tick "open network" for a
+   network without one. A blank password field on a row whose network is
+   already stored keeps that password. The node always joins the STRONGEST
+   of the saved networks, so list every floor/extender the node may sit on.
+4. **Save and restart** — the page refuses anything incomplete without
+   storing half of it (all-or-nothing), writes the list to the node's flash
+   and restarts the node. The setup WiFi disappears; the node joins the
+   strongest saved network and dials the relay as usual.
+
+Details worth knowing:
+
+- The setup page is served by the node itself (a captive DNS + a small HTTP
+  server behind the WPA2 gate), with the same hardening the dashboard pages
+  carry: a per-session CSRF token on the POST, strict request parsing with
+  size caps, security headers, HTML-escaped output, and passwords are never
+  echoed back into the page.
+- The flash store OVERRIDES the `config.h` list (precedence: setup page →
+  compiled-in). To start a node over from scratch, erase the flash
+  (`esptool erase_flash`, or the IDE's "Erase Flash: All") — reflashing the
+  sketch alone does NOT clear the store, which is what keeps a working node
+  working across updates.
+- The setup WiFi never opens while the node is connected and healthy; and a
+  node with a full store that merely lost its link uses the normal retry
+  flow for `WIFI_FALLBACK_SETUP_MS` before any window opens. The setup
+  WiFi's own password is public (it ships in the repository) — the gate
+  keeps drive-by neighbours out, and the page can only write the WiFi list,
+  nothing else.
+
+## 5. OTA firmware updates
 
 1. Export/compile the sketch as a binary, e.g. with arduino-cli:
    ```bash
@@ -196,7 +244,7 @@ settings page warns about them.
    from theirs they download, flash, log every step and reboot. Watch the
    Devices page's Firmware column (and the Logs page) as the fleet updates.
 
-## 5. First bring-up walkthrough
+## 6. First bring-up walkthrough
 
 1. Power a node → it appears on the Dashboard/Devices page within seconds
    (status: online, SSID, signal strength, firmware version, heap).
@@ -209,7 +257,7 @@ settings page warns about them.
    staged OTA image) — those are startup values from `config.js` on the Pi.
 4. Logs → pick a node or the relay → the last 200 entries, newest first.
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | Symptom | Where to look |
 | --- | --- |
@@ -218,8 +266,10 @@ settings page warns about them.
 | Toggle shows "delivered to 0" | no node online right now — offline nodes catch up the moment they reconnect (desired state is persisted). |
 | OTA never updates | Firmware page shows what the relay serves; node logs show each check. A refused upload means the file is not an ESP image (missing 0xE9 header). |
 | Dashboard shows "relay unreachable" | the relay service is not running or `relay_url`/`relay_key` in `config.php` do not match the relay's `config.js`. |
+| The `espnode-setup-…` WiFi does not appear | the node has usable credentials (flash store or `config.h`) and is trying to join them — the setup WiFi opens only from the factory state, or after 5 minutes (`WIFI_FALLBACK_SETUP_MS`) without ANY successful join. The serial monitor shows which list it booted with. |
+| Node joined nothing after a save | wrong password or hidden network — wait for the fallback window (setup WiFi reopens within 10 minutes), rejoin and fix the row; a blank password field keeps the stored one. To start over completely, erase the flash (section 4, "Details worth knowing"). |
 
-## 7. Running the tests
+## 8. Running the tests
 
 ```bash
 ./run_tests.sh

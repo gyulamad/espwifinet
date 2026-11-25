@@ -22,7 +22,10 @@ development (project #3 · Home automation, task #33).
   (the WiFiMulti pattern), outbound relay connection with
   framed-JSON protocol, status reports (SSID, RSSI, heap, uptime), in-band
   remote logging with repeat suppression and a settings-driven level
-  filter, OTA self-update, settings-driven GPIO.
+  filter, OTA self-update, settings-driven GPIO, and a cable-free first
+  install (#135): a factory-new node opens its own `espnode-setup-xxxxxx`
+  WiFi where a phone picks the networks; they land in the node's flash and
+  override the compiled-in list.
 - **Tests** (`./run_tests.sh`): Node unit + e2e (real relay, simulated
   node) + C++ logic tests against stub Arduino headers.
 
@@ -39,13 +42,21 @@ Design decisions worth knowing (each documented in the code):
   every previously hard-coded value; the relay's ports/keys stay in
   config.js on purpose — they need a restart, so the page shows them
   read-only instead.
+- The node's WiFi list has a precedence (#135): the setup page's flash
+  store overrides the `config.h` list, and the setup WiFi opens only when
+  the node has nothing usable to join with (factory state — serve until
+  saved) or joined nothing for a while (fallback — bounded windows, so a
+  temporary outage heals itself). The store is validated on every load and
+  a damaged one falls back to the compiled list.
 - Every module keeps its decision logic in pure functions/classes and the
   IO in thin wrappers, which is what makes the relay unit-testable and the
   sketch desktop-testable without hardware.
 - Security baseline: shared secrets for both hops (node→relay, PHP→relay,
   constant-time compared), session login with CSRF tokens and CSP for the
   dashboard, length caps on every wire buffer, HTML escaping via one
-  helper, no shell exec anywhere.
+  helper, no shell exec anywhere. The node's setup page (task #135) carries
+  the same baseline: WPA2-gated AP, per-session CSRF token, strict bounded
+  request parsing, security headers, and passwords are never echoed.
 
 See **INSTALL.md** for setup (Pi, PHP, flashing, OTA, troubleshooting) and
 **acronym.md** (#50) for every acronym the docs use.

@@ -13,8 +13,20 @@
 
 // ── WiFi: the node knows a LIST of networks and (re)connects to the
 // strongest one it can see (task #36, the WiFiMulti pattern). List every network a node may sit on — different floors,
-// rooms or extenders. Leave the SSID empty ("") for unused slots; at least
-// one network must be set.
+// rooms or extenders. Leave the SSID empty ("") for unused slots.
+//
+// This list is the FALLBACK: the networks picked on the node's own setup
+// page (task #135 — a factory-new node opens the "espnode-setup-xxxxxx"
+// WiFi) are stored in the node's flash and override it. Compile-in
+// credentials only when you want an install to work with NO setup-page
+// visit; leave the slots empty and the setup page walks the user through
+// (that is what makes a first install cable-free).
+//
+// Optional: override the setup WiFi's own password (WPA2, 8..63 printable
+// characters). The default is in the repository, so it is public knowledge:
+// define ESPNET_SETUP_AP_PASSWORD here, before the sketch's includes, to
+// replace it.
+// #define ESPNET_SETUP_AP_PASSWORD "my-own-setup-key"
 #define WIFI_NETWORK_1_SSID  "YOUR-WIFI-NAME"
 #define WIFI_NETWORK_1_PASS  "YOUR-WIFI-PASSWORD"
 #define WIFI_NETWORK_2_SSID  ""
