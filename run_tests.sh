@@ -90,6 +90,14 @@ echo ""
 echo "── firmware stack budget (#152) ──"
 bash tests/stack_budget.sh || fail=1
 
+# #159: the installers and the flash/OTA automation are shell scripts - a
+# syntax check catches the broken-one-liner class of failure in CI.
+echo ""
+echo "── install/flash/ota scripts: bash -n (#159) ──"
+for sh in install-relay.sh install-dash.sh flash-node.sh ota-deploy.sh; do
+  bash -n "$sh" || fail=1
+done
+
 # #144: the dashboard's PHP side now has its own coverage - a syntax lint of
 # every php file plus a real e2e of setup.php's first-run write (the
 # read-only-folder failure and the success path), driven through php -S.

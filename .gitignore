@@ -7,3 +7,5 @@ firmware/*.bin
 firmware/*.old
 *.zip
 npm-debug.log*
+ota.conf
+build/

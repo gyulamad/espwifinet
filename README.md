@@ -30,6 +30,10 @@ development (the Home automation project).
   install: a node whose first WiFi connect has never happened opens
   its own `espnode-setup-xxxxxx` WiFi where a phone picks the networks; the
   flash store is the node's only credential list.
+- **Scripts** (`install-relay.sh`, `install-dash.sh`, `flash-node.sh`,
+  `ota-deploy.sh`): the steps of INSTALL.md sections 1-2-3-5 automated
+  (task #159) — the Pi-side installers, the one wired node flash and the
+  OTA release publisher (with `--wait` it reports the fleet's versions).
 - **Tests** (`./run_tests.sh`): Node unit + e2e (real relay, simulated
   node), a discovery e2e (the real relay answers UDP probes; the firmware's
   real search code finds it over real sockets) + C++ logic tests against

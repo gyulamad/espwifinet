@@ -35,6 +35,13 @@ Directory layout:
 
 ## 1. Install the relay (Raspberry Pi)
 
+**This section, step by step, is automated by `./install-relay.sh`** (task
+#159): run it from the repository root and it copies the relay into /opt,
+runs `npm install`, generates config.js with two strong keys (printed once),
+installs and starts the systemd service, health-checks it and opens the
+firewall ports. The section below is what it does - read it to know what you
+are running, or follow it by hand.
+
 Requires Node.js ≥ 18 (`node --version`) on the Pi.
 
 ```bash
@@ -105,6 +112,12 @@ Data written by the relay (all inside the relay folder, add to your backups):
 
 ## 2. Install the PHP dashboard
 
+**This section is automated by `./install-dash.sh`** (task #159): it installs
+php/php-curl when missing, copies the dashboard into the web folder with sane
+modes, hands the folder to the web server user and prints the setup URL -
+without ever touching an existing `config.php`. The section below is what it
+does, by hand.
+
 Requires PHP ≥ 8 with the `curl` extension. On Debian/Raspberry Pi OS:
 
 ```bash
@@ -155,6 +168,11 @@ used over plain HTTP on a home LAN; put it behind TLS (or an SSH tunnel)
 before exposing it anywhere beyond that.
 
 ## 3. Flash a node
+
+**The compile + upload (and the optional factory-reset erase) are automated
+by `./flash-node.sh`** (task #159): `./flash-node.sh [--board esp32]
+[--port /dev/ttyUSB0] [--erase]` compiles the sketch with arduino-cli and
+uploads it, then prints what to do next. The section below is what it does.
 
 In the Arduino IDE (or arduino-cli):
 
@@ -326,6 +344,14 @@ Details worth knowing:
   can only write the WiFi list, nothing else.
 
 ## 5. OTA firmware updates
+
+**Steps 1-2 of this section are automated by `./ota-deploy.sh`** (task
+#159): copy `ota.example.conf` to `ota.conf`, fill in the relay's URL and
+API key once, then `./ota-deploy.sh [esp8266|esp32|all] [--version V]
+[--wait SECS]` compiles the sketch, checks the image magic, publishes to the
+relay's firmware API and (with `--wait`) reports every node's version until
+the online fleet runs the release. The section below is what it does, by
+hand.
 
 OTA replaces the sketch a node is ALREADY running, so it never serves as
 the first install: flash a node's first image over a cable (section 3,
