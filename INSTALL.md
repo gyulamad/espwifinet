@@ -168,6 +168,59 @@ In the Arduino IDE (or arduino-cli):
    relay connection there, and every log line also appears on the
    dashboard's Logs page.
 
+**The first flash goes over a cable; every later update goes over the
+air.** An OTA update replaces the sketch the node is already running, so a
+node needs exactly ONE wired upload — this one — to receive its first
+image; from then on the dashboard's Firmware page updates it together with
+the rest of the fleet (section 5). To upload without opening the IDE, from
+the repository root (the port is `/dev/ttyUSB0` on Linux, `COM3`-style on
+Windows — take yours from the IDE's port list):
+
+ESP8266 boards (NodeMCU, Wemos):
+
+```bash
+arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 \
+    --output-dir ./build arduino/ESP_node
+arduino-cli upload  --fqbn esp8266:esp8266:nodemcuv2 \
+    -p /dev/ttyUSB0 --input-dir ./build arduino/ESP_node
+```
+
+ESP32 boards (WROOM32 and friends):
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32 \
+    --output-dir ./build arduino/ESP_node
+arduino-cli upload  --fqbn esp32:esp32:esp32 \
+    -p /dev/ttyUSB0 --input-dir ./build arduino/ESP_node
+```
+
+Both commands handle the board's flash layout themselves (a bare
+`write_flash` of the app binary is not enough on a blank ESP32 — bootloader
+and partition table have to land too), which is why uploads should go
+through the IDE or arduino-cli. The compiled image is the same one the
+dashboard serves for OTA (section 5), so what you flash by cable and what
+the fleet pulls over the air stay identical.
+
+**Start a node over (erase the flash):** the flash store survives ordinary
+reflashes BY DESIGN — that is what keeps a working node working across
+updates, so the IDE's normal Upload never clears it. To return a node to
+factory state (credentials you can no longer fix from the dashboard, a
+store you suspect is corrupted, or a node moving to a new site):
+
+```bash
+esptool.py --port /dev/ttyUSB0 erase_flash
+```
+
+then upload the sketch again (the commands above) — the node boots blank,
+its setup WiFi opens and serves until the form saves. In the Arduino IDE
+the same happens in one pass: Tools → Erase Flash → **"All Flash
+Contents"**, then Upload. What erase clears: the WiFi list, the relay
+address + fleet key and both life-cycle flags (`provisioned`,
+`setup-armed`) — the node forgets everything and introduces itself as a
+fresh `espnode-setup-…` network. What it does not touch: the dashboard's
+history for that device — the device id derives from the chip id, so the
+node comes back under the same name with its logs intact.
+
 **Multi-wifi:** the node knows a LIST of networks and always
 (re)connects to the strongest one it can see — the WiFiMulti pattern. On
 the setup page, "Add another network" adds a row per network (different
@@ -240,10 +293,11 @@ Details worth knowing:
 - The flash store is the ONLY credential source. The store also carries two flags: `provisioned` (set the
   moment the node's first WiFi connect succeeds, so a power cut right after
   cannot resurrect the setup WiFi) and `setup-armed` (cleared by the setup
-  form's save). To start a node over from scratch, erase the flash
-  (`esptool erase_flash`, or the IDE's "Erase Flash: All") — reflashing the
-  sketch alone does NOT clear the store, which is what keeps a working node
-  working across updates.
+  form's save). To start a node over from scratch, erase the flash —
+  section 3, "Start a node over (erase the flash)" walks both ways (esptool
+  or the IDE's "Erase Flash: All") and says what is cleared and what is
+  kept. Reflashing the sketch alone does NOT clear the store, which is what
+  keeps a working node working across updates.
 - **Re-entering setup deliberately (SETUP_MODE):** the dashboard's
   Settings page has a "WiFi setup re-entry" maintenance switch. While it is
   ON, every node that (re)boots opens its setup WiFi instead of connecting;
@@ -258,6 +312,11 @@ Details worth knowing:
 
 ## 5. OTA firmware updates
 
+OTA replaces the sketch a node is ALREADY running, so it never serves as
+the first install: flash a node's first image over a cable (section 3,
+including the arduino-cli upload commands), and let this section take over
+from the first release on.
+
 1. Export/compile the sketch as a binary, e.g. with arduino-cli:
    ```bash
    arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 \
@@ -269,7 +328,7 @@ Details worth knowing:
    pick your exact board instead, and compile the SAME sketch folder:
 
    arduino-cli compile --fqbn esp32:esp32:esp32 \
-       --output-dir ./build esp32 arduino/ESP_node
+       --output-dir ./build arduino/ESP_node
    # -> ./build/ESP_node.ino.bin (that board's image)
 
    GPIO legs are board-dependent: the ceilings and the excluded flash/strap
@@ -309,7 +368,7 @@ Details worth knowing:
 | Dashboard shows "relay unreachable" | the relay service is not running or `relay_url`/`relay_key` in `config.php` do not match the relay's `config.js`. |
 | `setup.php` says "could not create a temporary file" | the web server cannot write the `espdash` folder — `sudo chown www-data:www-data /var/www/html/espdash` (`www-data` is the Debian/Raspberry Pi OS default; `ps aux | grep php-fpm` shows yours), then reload the page. The page detects this itself and shows the same fix before you fill the form. |
 | The `espnode-setup-…` WiFi does not appear | the node is provisioned (it has completed a first successful WiFi connect, flag stored in flash) and is retrying — a provisioned node never auto-opens the setup WiFi. To re-enter setup deliberately: Settings page → "WiFi setup re-entry" ON, power-cycle the node, save its WiFi, switch OFF. The serial monitor shows the boot decision. |
-| Node joined nothing after a save | wrong password or hidden network — arm SETUP_MODE on the dashboard, power-cycle the node, rejoin its setup WiFi and fix the row (a blank password field keeps the stored one); the save disarms the node again. To start over completely, erase the flash (section 4, "Details worth knowing"). |
+| Node joined nothing after a save | wrong password or hidden network — arm SETUP_MODE on the dashboard, power-cycle the node, rejoin its setup WiFi and fix the row (a blank password field keeps the stored one); the save disarms the node again. To start over completely, erase the flash (section 3, "Start a node over (erase the flash)"). |
 | `cp config.example.php config.php` says "Permission denied" | the `espdash` folder belongs to the web server user, so your own login cannot write there — run the manual copy through sudo as shown in section 2 (or use the setup page, which writes the file as the web server user). |
 
 ## 8. Running the tests
