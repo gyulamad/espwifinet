@@ -944,6 +944,120 @@ class FakeLog : public espnet::ISetupLog {
   std::vector<std::string> lines_;
 };
 
+// ── task #152: the save path's heap buffers and its serial narration ──
+
+class VecSetupLog : public espnet::ISetupLog {
+ public:
+  void line(const std::string& text) override { lines.push_back(text); }
+  bool has(const std::string& part) const {
+    for (size_t i = 0; i < lines.size(); ++i) {
+      if (lines[i].find(part) != std::string::npos) return true;
+    }
+    return false;
+  }
+  std::vector<std::string> lines;
+};
+
+static void testRegionScratchAndFullSave() {
+  // the flash-region scratch lives on the heap (a 3000-byte local array
+  // overflowed the loop task's stack on the first Save, #152): zeroed,
+  // exactly the size asked for, a fresh buffer per object
+  espnet::RegionScratch a(espnet::WIFI_STORE_REGION_MAX);
+  espnet::RegionScratch b(espnet::RELAY_CONFIG_REGION_MAX);
+  assert(a.ok() && b.ok());
+  assert(a.size() == espnet::WIFI_STORE_REGION_MAX && b.size() == espnet::RELAY_CONFIG_REGION_MAX);
+  assert(a.data() != b.data());
+  for (size_t i = 0; i < a.size(); ++i) assert(a.data()[i] == 0);
+
+  // the biggest save the form can make: 30 networks with the longest legal
+  // name and password, through SetupForm::save into BOTH stores and back
+  RamStoreBackend backend;
+  espnet::WifiStore store;
+  store.begin(&backend);
+  RamStoreBackend relayBackend;
+  espnet::RelayConfigStore relayStore;
+  relayStore.begin(&relayBackend);
+  espnet::SetupForm form("espnode-setup-152152", store, nullptr, 0, relayStore, espnet::RelayConfig(), kToken);
+  std::string rows;
+  for (int i = 1; i <= espnet::WIFI_STORE_MAX_NETS; ++i) {
+    const std::string n = std::to_string(i);
+    std::string name = "net-" + n;
+    name.resize(espnet::WIFI_STORE_SSID_MAX, 'x');
+    std::string pass = "pw-" + n;
+    pass.resize(espnet::WIFI_STORE_PASS_MAX, 'y');
+    if (i > 1) rows += "&";
+    rows += "w.ssid." + n + "=" + name + "&w.pass." + n + "=" + pass;
+  }
+  espnet::HttpReply r = form.handle("POST", "/save", saveBody(rows));
+  assert(r.status == 200 && form.saved());
+  std::vector<espnet::WifiStoreNet> back(espnet::WIFI_STORE_MAX_NETS);
+  assert(store.load(back.data(), espnet::WIFI_STORE_MAX_NETS) == espnet::WIFI_STORE_MAX_NETS);
+  assert(back[29].ssid.size() == espnet::WIFI_STORE_SSID_MAX && back[29].pass.size() == espnet::WIFI_STORE_PASS_MAX);
+  espnet::RelayConfig relayBack;
+  assert(relayStore.load(relayBack) && relayBack.host == "192.168.1.10");
+
+  // the page renders all 30 stored rows (renderForm's row tables are heap too)
+  RamStoreBackend backend2;
+  espnet::WifiStore store2;
+  store2.begin(&backend2);
+  RamStoreBackend relayBackend2;
+  espnet::RelayConfigStore relayStore2;
+  relayStore2.begin(&relayBackend2);
+  espnet::SetupForm full("espnode-setup-152153", store2, back.data(), espnet::WIFI_STORE_MAX_NETS, relayStore2,
+                         espnet::RelayConfig(), kToken);
+  espnet::HttpReply page = full.handle("GET", "/", "");
+  assert(page.status == 200);
+  assert(page.body.find("name=\"w.ssid.30\"") != std::string::npos);
+  assert(page.body.find("name=\"w.ssid.31\"") == std::string::npos);
+}
+
+static void testSetupSaveNarration() {
+  RamStoreBackend backend;
+  espnet::WifiStore store;
+  store.begin(&backend);
+  RamStoreBackend relayBackend;
+  espnet::RelayConfigStore relayStore;
+  relayStore.begin(&relayBackend);
+  VecSetupLog log;
+  espnet::SetupForm form("espnode-setup-152154", store, nullptr, 0, relayStore, espnet::RelayConfig(), kToken);
+
+  // silent by default: no log attached, nothing breaks
+  assert(form.handle("POST", "/save", "csrf=nope").status == 403);
+  form.setLog(&log);
+
+  // refusals say why
+  assert(form.handle("POST", "/save", "csrf=nope").status == 403);
+  assert(log.has("save: refused - the CSRF token does not match"));
+  // a validation failure names the count and the problems, writes nothing
+  assert(form.handle("POST", "/save", saveBody("w.ssid.1=Home")).status == 422);
+  assert(log.has("save: rejected - 1 validation error(s), nothing written"));
+  assert(backend.blank_);
+
+  // a flash failure is named (and the node stays in setup)
+  backend.failWrite_ = true;
+  assert(form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=hunter2hunter2")).status == 500);
+  assert(log.has("save: FAILED - the WiFi list could not be written to flash"));
+  backend.failWrite_ = false;
+  relayBackend.failWrite_ = true;
+  assert(form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=hunter2hunter2")).status == 500);
+  assert(log.has("save: FAILED - the relay configuration could not be written to flash"));
+  relayBackend.failWrite_ = false;
+
+  // the good save walks every stage in order
+  assert(form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=hunter2hunter2")).status == 200);
+  assert(log.has("save: valid - 1 network(s), relay 192.168.1.10:7777"));
+  assert(log.has("save: WiFi list written"));
+  assert(log.has("save: both flash stores written"));
+
+  // NO secret ever reaches the serial port: not the WiFi password, not the
+  // relay key, not the CSRF token
+  for (size_t i = 0; i < log.lines.size(); ++i) {
+    assert(log.lines[i].find("hunter2hunter2") == std::string::npos);
+    assert(log.lines[i].find("fleet-key-123") == std::string::npos);
+    assert(log.lines[i].find(kToken) == std::string::npos);
+  }
+}
+
 static void testSetupSession() {
   using espnet::SetupSessionConfig;
   using espnet::SetupStep;
@@ -1127,6 +1241,9 @@ static void testSketchCompiles() {
   assert(std::string(DEVICE).rfind("esp-", 0) == 0);
   assert(portal.ssid().rfind("espnode-setup-", 0) == 0);
   assert(!ESP.restarted);
+  // #152: the boot narrates why it started and how much stack it has left
+  assert(Stream::serialOut.find("boot: reset reason") != std::string::npos);
+  assert(Stream::serialOut.find("setup: portal window unbounded") != std::string::npos);
 
   // a few loop passes: the setup session serves (stub radio), no crash
   for (int i = 0; i < 3; ++i) loop();
@@ -1163,6 +1280,10 @@ int main() {
   printf("PASS setup decisions\n");
   testSetupForm();
   printf("PASS setup form\n");
+  testRegionScratchAndFullSave();
+  printf("PASS region scratch + full 30-network save\n");
+  testSetupSaveNarration();
+  printf("PASS setup save narration (no secrets logged)\n");
   testSetupSession();
   printf("PASS setup session\n");
   testHttpRequestReader();

@@ -46,6 +46,13 @@ inline void feedWdt() {} // the loop task's watchdog is off by default
 
 inline uint32_t chipId() { return (uint32_t)(ESP.getEfuseMac() & 0xffffffffULL); }
 
+// The loop task's LOWEST free stack since boot, in bytes (task #152): a
+// high-water mark, so one log line after a request shows how close that
+// request came to overflowing it. (The Arduino loop task has only about 4 KB
+// on the ESP8266 and 8 KB on the ESP32 - the setup form's save once
+// overflowed it and reset the node mid-request.)
+inline uint32_t freeStackBytes() { return (uint32_t)uxTaskGetStackHighWaterMark(nullptr); }
+
 // The ESP32 core's EspClass has no getResetReason() (that member is
 // ESP8266-only - the v1 desktop stub hid the difference because its fake ESP
 // class carried the ESP8266 surface on both builds, so the real esp32 compile
@@ -87,6 +94,11 @@ inline void feedWdt() { ESP.wdtFeed(); }
 inline uint32_t chipId() { return ESP.getChipId(); }
 
 inline String resetReason() { return ESP.getResetReason(); }
+
+// The loop task's LOWEST free stack since boot, in bytes (task #152): the
+// core's cont stack high-water mark. The ESP8266 loop stack is only about
+// 4 KB, so this is the number that tells a near-overflow from a healthy run.
+inline uint32_t freeStackBytes() { return ESP.getFreeContStack(); }
 
 } // namespace espnet
 

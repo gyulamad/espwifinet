@@ -44,6 +44,8 @@
 #undef max
 #endif
 #include <cstddef>
+#include <memory>
+#include <new>
 #include <stdint.h>
 #include <string>
 #pragma pop_macro("min")
@@ -68,6 +70,26 @@ static const size_t WIFI_STORE_PASS_MAX = 63;
 // (wifi_store_hw.h maps the backend onto it): magic + flags + 2-byte
 // length + the blob, above the worst case (30 * 97 = 2910 bytes).
 static const size_t WIFI_STORE_REGION_MAX = 3000;
+
+// A flash-region-sized scratch buffer on the HEAP (task #152). The store
+// blobs are 3000 / 1096 bytes: as local arrays they sat on the loop task's
+// stack (about 4 KB on the ESP8266, 8 KB on the ESP32) and, stacked under
+// the setup form's own frames, overflowed it on the first Save - the node
+// reset mid-request and the phone's page never got an answer. The desktop
+// tests run on an 8 MB stack and could not see it (tests/stack_budget.sh
+// now guards the frame sizes). Allocation failure is answered with ok() ==
+// false, never an exception: the cores build with -fno-exceptions.
+class RegionScratch {
+ public:
+  explicit RegionScratch(size_t size) : data_(new (std::nothrow) char[size]()), size_(size) {}
+  bool ok() const { return data_ != nullptr; }
+  char* data() { return data_.get(); }
+  size_t size() const { return size_; }
+
+ private:
+  std::unique_ptr<char[]> data_;
+  size_t size_;
+};
 
 // One stored WiFi network. pass == "" means an open network (the node joins
 // it without a password); the setup form marks such rows explicitly.
@@ -136,11 +158,13 @@ class WifiStore {
     provisioned_ = false;
     armed_ = false;
     if (backend_ == nullptr || maxCount <= 0) return 0;
-    char buf[WIFI_STORE_REGION_MAX];
-    if (!backend_->read(buf, sizeof(buf))) return 0;
+    RegionScratch scratch(WIFI_STORE_REGION_MAX);
+    if (!scratch.ok()) return 0;
+    char* buf = scratch.data();
+    if (!backend_->read(buf, scratch.size())) return 0;
     size_t len = 0;
     bool prov = false, arm = false;
-    if (!wifiStoreRegionBlob(buf, sizeof(buf), len, prov, arm)) return 0;
+    if (!wifiStoreRegionBlob(buf, scratch.size(), len, prov, arm)) return 0;
     const int count = wifiStoreParse(buf + (wifiStoreIsV2(buf) ? 7 : 6), len, out, maxCount);
     // The flags land only when the entries really parse: a damaged blob
     // reads as "no credentials" (which means the portal, not stale flags).
@@ -187,11 +211,13 @@ class WifiStore {
   // the region is unreadable (a flag flip never destroys the entries).
   bool writeCurrentFlags() {
     if (backend_ == nullptr) return false;
-    char buf[WIFI_STORE_REGION_MAX];
-    if (!backend_->read(buf, sizeof(buf))) return false;
+    RegionScratch scratch(WIFI_STORE_REGION_MAX);
+    if (!scratch.ok()) return false;
+    char* buf = scratch.data();
+    if (!backend_->read(buf, scratch.size())) return false;
     size_t len = 0;
     bool prov = false, arm = false;
-    if (!wifiStoreRegionBlob(buf, sizeof(buf), len, prov, arm)) return false;
+    if (!wifiStoreRegionBlob(buf, scratch.size(), len, prov, arm)) return false;
     if (!wifiStoreIsV2(buf)) {
       // A v1 region migrates in place: shift the entry blob one byte right
       // so it sits behind the v2 header (magic + flags + length), then
@@ -207,8 +233,10 @@ class WifiStore {
     for (int i = 0; i < count; ++i) {
       if (!validStoreSsid(nets[i].ssid) || !validStorePass(nets[i].pass)) return false;
     }
-    char buf[WIFI_STORE_REGION_MAX];
-    const int len = wifiStoreSerialize(nets, count, buf + 7, sizeof(buf) - 7);
+    RegionScratch scratch(WIFI_STORE_REGION_MAX);
+    if (!scratch.ok()) return false;
+    char* buf = scratch.data();
+    const int len = wifiStoreSerialize(nets, count, buf + 7, scratch.size() - 7);
     if (len < 0) return false;
     return writeHeader(buf, static_cast<size_t>(len), provisioned, armed);
   }
@@ -311,11 +339,13 @@ class RelayConfigStore {
   bool load(RelayConfig& out) {
     out = RelayConfig();
     if (backend_ == nullptr) return false;
-    char buf[RELAY_CONFIG_REGION_MAX];
-    if (!backend_->read(buf, sizeof(buf))) return false;
+    RegionScratch scratch(RELAY_CONFIG_REGION_MAX);
+    if (!scratch.ok()) return false;
+    char* buf = scratch.data();
+    if (!backend_->read(buf, scratch.size())) return false;
     size_t len = 0;
     bool set = false;
-    if (!relayRegionBlob(buf, sizeof(buf), len, set)) return false;
+    if (!relayRegionBlob(buf, scratch.size(), len, set)) return false;
     const std::string blob(buf + 7, len);
     const size_t t1 = blob.find('\t');
     if (t1 == std::string::npos) return false;
@@ -349,8 +379,10 @@ class RelayConfigStore {
     payload += std::to_string(static_cast<long long>(cfg.port));
     payload += '\t';
     payload += cfg.key;
-    char buf[RELAY_CONFIG_REGION_MAX];
-    if (payload.size() + 7 > sizeof(buf)) return false;
+    RegionScratch scratch(RELAY_CONFIG_REGION_MAX);
+    if (!scratch.ok()) return false;
+    char* buf = scratch.data();
+    if (payload.size() + 7 > scratch.size()) return false;
     buf[0] = 'E';
     buf[1] = 'N';
     buf[2] = 'R';

@@ -66,6 +66,7 @@ class Stream {
  public:
   virtual ~Stream() {}
   void begin(unsigned long) {}  // HardwareSerial::begin (the real core's baud call)
+  void flush() {}               // HardwareSerial::flush (#152: the sketch drains the port before a restart)
   void println() { serialOut += "\n"; }
   void println(const char* s) { serialOut += s; serialOut += "\n"; }
   void printf(const char* fmt, ...) {
@@ -97,6 +98,7 @@ class EspStub {
   unsigned long long getEfuseMac() { return 0xA1B2C3D4E5F6ULL; }
 #else // ESP8266
   String getResetReason() { return String("External System"); }
+  unsigned getFreeContStack() { return 2500; } // the cont stack's high-water mark (#152)
   unsigned getChipId() { return 0x00A1B2C3; }
   void wdtFeed() {}
 #endif
@@ -146,6 +148,7 @@ class WiFiStub {
   }
   IPAddressStub softAPIP() { return IPAddressStub(); }
   void softAPdisconnect(bool) { apUp = false; }
+  int softAPgetStationNum() { return 0; }  // phones joined to the setup WiFi (#152 diagnostics)
   void persistent(bool) {}
   std::string lastSoftApSsid;
   std::string lastSoftApPass;

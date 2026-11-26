@@ -256,6 +256,11 @@ void setup() {
   nodeLog.setMinLevel((espnet::LogLevel)minLogLevel);
   nodeLog.logf(espnet::LOG_INFO, "boot: %s fw %s gpio pin %ld (%s)", DEVICE, FW, gpioPin,
                gpioActiveHigh ? "active-high" : "active-low");
+  // Why the node (re)started + how much room it has (task #152): a save that
+  // resets the node mid-request shows here as "Exception" / "Hardware
+  // Watchdog" / "Software Watchdog" instead of "Software/System restart".
+  nodeLog.logf(espnet::LOG_INFO, "boot: reset reason '%s', free heap %u, lowest free stack %u",
+               espnet::resetReason().c_str(), (unsigned)ESP.getFreeHeap(), (unsigned)espnet::freeStackBytes());
 
   // ── credentials + relay configuration: flash is the ONLY source ──
   // (#135 v2 the WiFi list, #140 the relay host/port/key)
@@ -294,7 +299,10 @@ void setup() {
                  "join '%s' (password in INSTALL.md) and pick the network(s) + relay there",
                  provisionedDone ? 1 : 0, wifiStore.setupArmed() ? 1 : 0, relayConfigured ? 1 : 0,
                  portal.ssid().c_str());
-    portal.start(espnet::bootPortalServeCapMs(effectiveCount == 0, SETUP_SERVE_MAX_MS)); // factory: forever; holds credentials: bounded window (#152)
+    const uint32_t serveCapMs = espnet::bootPortalServeCapMs(effectiveCount == 0, SETUP_SERVE_MAX_MS);
+    nodeLog.logf(espnet::LOG_INFO, "setup: portal window %s",
+                 serveCapMs == 0 ? "unbounded (factory node, serves until saved)" : "bounded (the node holds credentials)");
+    portal.start(serveCapMs); // factory: forever; holds credentials: bounded window (#152)
     portalActive = true;
   }
 
@@ -309,6 +317,9 @@ void loop() {
   if (portalActive) {
     const espnet::SetupStep step = portal.tick(millis());
     if (step == espnet::SetupStep::Restart) {
+      nodeLog.logf(espnet::LOG_INFO, "setup: saved - restarting now (lowest free stack %u)",
+                   (unsigned)espnet::freeStackBytes());
+      Serial.flush();  // let the line out before the reset
       ESP.restart(); // the saved credentials take over (session stopped the AP)
       return;
     }

@@ -27,3 +27,7 @@
 // error, exactly what the real esp32 toolchain caught in v1).
 using std::min;
 using std::max;
+
+// The loop task's stack high-water mark (FreeRTOS task.h, which the real
+// core's esp32-hal.h pulls in): board.h's freeStackBytes() reads it (#152).
+inline unsigned uxTaskGetStackHighWaterMark(void*) { return 2500; }

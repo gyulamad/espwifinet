@@ -29,7 +29,11 @@
 //    drops any handler header that could break it (CR/LF, a second
 //    Content-Length, ...).
 //  * The WiFi password is never printed. Logs carry the SSID and the URL
-//    only.
+//    only. Since task #152 the glue narrates every connection (accept,
+//    request line, body size, reply status and bytes written, timeouts,
+//    drops) and prints an "alive" heartbeat: a hung install can be read off
+//    the serial monitor. Request BODIES are never printed (they carry the
+//    passwords and the relay key) - only their length.
 //  * poll() never blocks for long and never calls delay(); loop() keeps
 //    feeding the watchdog, like the rest of the sketch.
 //
@@ -41,6 +45,8 @@
 //   ESPNET_SETUP_RQ_TMO_MS      10000  a request incomplete by then is dropped
 //   ESPNET_SETUP_AP_CHANNEL     1      the access point's WiFi channel
 //   ESPNET_SETUP_AP_STATIONS    4      phones that may be joined at once
+//   ESPNET_SETUP_RX_CHUNK       512    bytes read from a socket per pass
+//   ESPNET_SETUP_BEAT_MS        5000   serial heartbeat while the portal serves
 
 #pragma once
 
@@ -106,6 +112,19 @@
 // the watchdog fed; the deadline bounds how long one slot may hold the loop.
 #ifndef ESPNET_SETUP_REPLY_TMO_MS
 #define ESPNET_SETUP_REPLY_TMO_MS 2000
+#endif
+
+// The read chunk is a MEMBER of the (heap-allocated) net object, not a local:
+// the loop task's stack is only about 4 KB on the ESP8266 and the request
+// handler runs below this function (task #152).
+#ifndef ESPNET_SETUP_RX_CHUNK
+#define ESPNET_SETUP_RX_CHUNK 512
+#endif
+// How often poll() prints one "alive" line (stations, open slots, heap, the
+// lowest free stack so far). Silence on the serial monitor while the portal
+// serves would mean the loop itself is stuck or the node reset (#152).
+#ifndef ESPNET_SETUP_BEAT_MS
+#define ESPNET_SETUP_BEAT_MS 5000
 #endif
 
 #ifndef SETUP_INFO
@@ -256,6 +275,7 @@ class ArduinoSetupNet : public ISetupNet {
 
   void poll() override {
     if (!running_) return;
+    heartbeat();
     dns_.processNextRequest();
     acceptNew();
     for (int i = 0; i < ESPNET_SETUP_MAX_CLIENTS; ++i) {
@@ -284,9 +304,28 @@ class ArduinoSetupNet : public ISetupNet {
   struct Slot {
     bool used = false;
     uint32_t startMs = 0;
+    size_t bytesIn = 0;  // request bytes received so far (diagnostics, #152)
     WiFiClient client;
     HttpRequestReader reader;
   };
+
+  int slotIndex(const Slot& s) const { return static_cast<int>(&s - slots_); }
+
+  int slotsInUse() const {
+    int n = 0;
+    for (int i = 0; i < ESPNET_SETUP_MAX_CLIENTS; ++i) n += slots_[i].used ? 1 : 0;
+    return n;
+  }
+
+  // One line every ESPNET_SETUP_BEAT_MS while the portal serves (#152).
+  void heartbeat() {
+    const uint32_t now = millis();
+    if (static_cast<uint32_t>(now - lastBeatMs_) < ESPNET_SETUP_BEAT_MS) return;
+    lastBeatMs_ = now;
+    SETUP_INFO("alive: stations=%d slots=%d/%d heap=%u min-free-stack=%u", WiFi.softAPgetStationNum(),
+               slotsInUse(), ESPNET_SETUP_MAX_CLIENTS, static_cast<unsigned>(ESP.getFreeHeap()),
+               static_cast<unsigned>(freeStackBytes()));
+  }
 
   bool failStart(const char* why) {
     SETUP_WARN("%s", why);
@@ -305,34 +344,45 @@ class ArduinoSetupNet : public ISetupNet {
         if (!slots_[i].used) free = &slots_[i];
       }
       if (!free) {
+        SETUP_WARN("connection dropped: all %d slots are busy", ESPNET_SETUP_MAX_CLIENTS);
         c.stop();  // all slots busy: drop it, the phone retries
         continue;
       }
       free->used = true;
       free->startMs = millis();
+      free->bytesIn = 0;
       free->client = c;
       free->reader.reset();
+      SETUP_INFO("slot %d: connection accepted (%d/%d in use)", slotIndex(*free), slotsInUse(),
+                 ESPNET_SETUP_MAX_CLIENTS);
     }
   }
 
   void serve(Slot& s) {
     if (static_cast<uint32_t>(millis() - s.startMs) > ESPNET_SETUP_RQ_TMO_MS) {
+      SETUP_WARN("slot %d: request timeout after %u ms with %u byte(s) received - answering 408", slotIndex(s),
+                 static_cast<unsigned>(millis() - s.startMs), static_cast<unsigned>(s.bytesIn));
       answer(s, setupRejection(408));
       return;
     }
     const int avail = s.client.available();
     if (avail <= 0) {
-      if (!s.client.connected()) release(s);  // the phone left before the request was complete
+      if (!s.client.connected()) {  // the phone left before the request was complete
+        SETUP_INFO("slot %d: peer closed after %u byte(s), request incomplete", slotIndex(s),
+                   static_cast<unsigned>(s.bytesIn));
+        release(s);
+      }
       return;
     }
-    uint8_t buf[1024];
-    const int want = avail < static_cast<int>(sizeof(buf)) ? avail : static_cast<int>(sizeof(buf));
-    const int n = s.client.read(buf, static_cast<size_t>(want));
+    const int want = avail < static_cast<int>(sizeof(rx_)) ? avail : static_cast<int>(sizeof(rx_));
+    const int n = s.client.read(rx_, static_cast<size_t>(want));
     if (n <= 0) return;
-    HttpRequestReader::Status st = s.reader.feed(reinterpret_cast<const char*>(buf), static_cast<size_t>(n));
+    s.bytesIn += static_cast<size_t>(n);
+    HttpRequestReader::Status st = s.reader.feed(reinterpret_cast<const char*>(rx_), static_cast<size_t>(n));
     if (st == HttpRequestReader::NeedMore) return;
     if (st == HttpRequestReader::Rejected) {
-      SETUP_WARN("request refused: %d", s.reader.rejectStatus());
+      SETUP_WARN("slot %d: request refused: %d (%u byte(s) received)", slotIndex(s), s.reader.rejectStatus(),
+                 static_cast<unsigned>(s.bytesIn));
       answer(s, setupRejection(s.reader.rejectStatus()));
       return;
     }
@@ -341,6 +391,8 @@ class ArduinoSetupNet : public ISetupNet {
     // own IP (with or without the default port); redirect everything else
     // to the board. HTTP/1.0 clients may omit Host; let them through.
     const std::string& h = s.reader.host();
+    SETUP_INFO("slot %d: %s %s (host '%s', body %u byte(s))", slotIndex(s), s.reader.method().c_str(),
+               s.reader.target().c_str(), h.c_str(), static_cast<unsigned>(s.reader.body().size()));
     if (!h.empty() && h != SETUP_AP_IP && h != std::string(SETUP_AP_IP) + ":80") {
       HttpReply redir;
       redir.status = 302;
@@ -355,6 +407,7 @@ class ArduinoSetupNet : public ISetupNet {
   void answer(Slot& s, const HttpReply& reply) {
     const std::string bytes = setupFormatReply(reply);
     size_t sent = 0;
+    unsigned stalls = 0;  // write() answered 0: the send buffer was full
     // A full send buffer (a phone ACKing slowly, or the radio still draining
     // the backlog the save's flash writes just caused) makes write() return
     // 0: keep trying with a yield between attempts instead of counting
@@ -367,10 +420,21 @@ class ArduinoSetupNet : public ISetupNet {
       if (!s.client.connected() || static_cast<int32_t>(millis() - deadline) >= 0) break;
       const size_t k = s.client.write(reinterpret_cast<const uint8_t*>(bytes.data()) + sent, bytes.size() - sent);
       if (k == 0) {
+        ++stalls;
         yield();  // feeds the watchdog and gives the radio its send slot back
       } else {
         sent += k;
       }
+    }
+    const unsigned tookMs = static_cast<unsigned>(millis() - (deadline - ESPNET_SETUP_REPLY_TMO_MS));
+    if (sent == bytes.size()) {
+      SETUP_INFO("slot %d: reply %d sent, %u/%u byte(s) in %u ms (%u full-buffer stall(s)), free stack %u", slotIndex(s),
+                 reply.status, static_cast<unsigned>(sent), static_cast<unsigned>(bytes.size()), tookMs, stalls,
+                 static_cast<unsigned>(freeStackBytes()));
+    } else {
+      SETUP_WARN("slot %d: reply %d NOT delivered, %u/%u byte(s) in %u ms (%s)", slotIndex(s), reply.status,
+                 static_cast<unsigned>(sent), static_cast<unsigned>(bytes.size()), tookMs,
+                 s.client.connected() ? "send deadline" : "peer gone");
     }
     release(s);
   }
@@ -387,6 +451,8 @@ class ArduinoSetupNet : public ISetupNet {
   WiFiServer server_;
   DNSServer dns_;
   Slot slots_[ESPNET_SETUP_MAX_CLIENTS];
+  uint8_t rx_[ESPNET_SETUP_RX_CHUNK];  // shared read chunk (poll() serves one slot at a time)
+  uint32_t lastBeatMs_ = 0;
   bool touched_, running_, dnsStarted_, serverStarted_;
 };
 
@@ -414,6 +480,7 @@ class SetupPortal {
     stop();
     const std::string token = csrfTokenFromRandom(espRandom(), espRandom(), espRandom(), espRandom());
     form_.reset(new SetupForm(ssid_, *store_, stored_, storedCount_, *relayStore_, relayCur_, token));
+    form_->setLog(&serialLog_);  // the save's stages on the serial monitor (#152)
     net_.reset(new ArduinoSetupNet(*form_));
     SetupSessionConfig cfg;
     cfg.ssid = ssid_;

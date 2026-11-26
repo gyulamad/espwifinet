@@ -3,6 +3,7 @@
 #   1. node unit tests (relay logic)
 #   2. node e2e test (spawns the real relay, drives it over TCP + HTTP)
 #   3. C++ logic tests (node firmware's net/log/ota logic against stubs, g++)
+#   4. firmware stack budget (frame sizes, tests/stack_budget.sh, g++)
 #
 # Usage: ./run_tests.sh   (installs the relay's npm dependencies if missing)
 set -u
@@ -51,6 +52,14 @@ else
   echo ""
   echo "── C++ logic tests skipped (no g++) ──"
 fi
+
+# #152: the firmware's stack frames stay small. The loop task has ~4 KB of
+# stack on the ESP8266 and the desktop tests run on 8 MB, so an oversized
+# local (the 3000-byte flash blob that overflowed it on the first Save) is
+# invisible to every assert - this step measures the frames instead.
+echo ""
+echo "── firmware stack budget (#152) ──"
+bash tests/stack_budget.sh || fail=1
 
 # #144: the dashboard's PHP side now has its own coverage - a syntax lint of
 # every php file plus a real e2e of setup.php's first-run write (the

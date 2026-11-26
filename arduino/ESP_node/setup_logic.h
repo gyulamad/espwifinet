@@ -520,9 +520,11 @@ inline std::string renderForm(const std::string& title, const WifiStoreNet* stor
                               const RelayConfig& relayPrefill, bool relayHasKey,
                               const std::string& relayHostBack, const std::string& relayPortBack) {
   // which rows to bring back: what the user submitted, else what is stored
-  WifiStoreNet rows[WIFI_STORE_MAX_NETS];
-  bool openRows[WIFI_STORE_MAX_NETS] = {false};
-  bool hasPassword[WIFI_STORE_MAX_NETS] = {false};
+  // (heap, not stack - task #152: 30 rows are ~1.9 KB of the loop task's
+  // small stack; the page is rendered from inside the request handler)
+  std::vector<WifiStoreNet> rows(WIFI_STORE_MAX_NETS);
+  std::vector<bool> openRows(WIFI_STORE_MAX_NETS, false);
+  std::vector<bool> hasPassword(WIFI_STORE_MAX_NETS, false);
   int rowCount = 0;
   size_t submittedRows = 0;
   for (int i = 1; i <= WIFI_STORE_MAX_NETS; ++i) {
@@ -600,6 +602,15 @@ inline std::string renderForm(const std::string& title, const WifiStoreNet* stor
 
 // ── The request handler ─────────────────────────────────────────────────
 
+// Serial log lines (optional): the setup form and session narrate what they
+// decide (task #152), so a stuck install can be read off the serial monitor.
+// NO secret is ever passed to this: no WiFi password, no relay key, no CSRF
+// token - counts, field names and outcomes only.
+struct ISetupLog {
+  virtual ~ISetupLog() {}
+  virtual void line(const std::string& text) = 0;
+};
+
 class SetupForm {
  public:
   // `csrfToken`: an unguessable string for this session (>= WIFI_SETUP_MIN_TOKEN
@@ -630,7 +641,14 @@ class SetupForm {
 
   bool saved() const { return saved_; }  // the store was written: the session restarts the node
 
+  // Optional narration of the save path (#152); nullptr = silent (the default).
+  void setLog(ISetupLog* log) { log_ = log; }
+
  private:
+  void say(const std::string& text) {
+    if (log_ != nullptr) log_->line(text);
+  }
+
   HttpReply notAllowed(const char* allow) {
     HttpReply r = textReply(405, "Method not allowed");
     r.headers.push_back(std::make_pair("Allow", allow));
@@ -659,12 +677,13 @@ class SetupForm {
   // the token was right. false: `fail` is the answer to send, and nothing
   // has been looked at beyond the token.
   bool acceptPost(const std::string& body, std::vector<FormField>& fields, HttpReply& fail) {
-    if (saved()) { fail = textReply(409, "Already saved, the node is restarting"); return false; }
-    if (body.size() > WIFI_SETUP_MAX_BODY) { fail = textReply(413, "The request is too large"); return false; }
+    if (saved()) { say("save: refused - already saved"); fail = textReply(409, "Already saved, the node is restarting"); return false; }
+    if (body.size() > WIFI_SETUP_MAX_BODY) { say("save: refused - the body is too large"); fail = textReply(413, "The request is too large"); return false; }
     std::string err;
-    if (!parseUrlEncoded(body, fields, err)) { fail = textReply(400, "Bad request: " + err); return false; }
+    if (!parseUrlEncoded(body, fields, err)) { say("save: refused - the body is malformed (" + err + ")"); fail = textReply(400, "Bad request: " + err); return false; }
     const std::string* sent = findField(fields, "csrf");
     if (token_.size() < WIFI_SETUP_MIN_TOKEN || sent == nullptr || !constantTimeEquals(*sent, token_)) {
+      say("save: refused - the CSRF token does not match (page opened before a restart?)");
       fail = textReply(403, "Forbidden: open the setup page again and resubmit it");
       return false;
     }
@@ -685,11 +704,14 @@ class SetupForm {
     HttpReply fail;
     if (!acceptPost(body, fields, fail)) return fail;
 
-    WifiStoreNet nets[WIFI_STORE_MAX_NETS];
+    // The rows live on the HEAP (task #152): 30 networks of two std::strings
+    // are ~1.9 KB, which on the loop task's small stack (about 4 KB on the
+    // ESP8266) is the difference between a reply and a reset.
+    std::vector<WifiStoreNet> nets(WIFI_STORE_MAX_NETS);
     int count = 0;
     RelayConfig relay;
     std::vector<std::string> errors;
-    buildStoreRows(fields, stored_, storedCount_, nets, count, errors);
+    buildStoreRows(fields, stored_, storedCount_, nets.data(), count, errors);
     for (int i = 0; i < count; ++i) {
       if (!validStoreSsid(nets[i].ssid)) { errors.push_back("WiFi network: the name is not usable"); break; }
       if (!validStorePass(nets[i].pass)) { errors.push_back("WiFi network: the password is not usable"); break; }
@@ -697,20 +719,30 @@ class SetupForm {
     // #140: the relay fields are part of the same save — everything is
     // validated BEFORE anything is written, so a rejected save changes
     // neither the WiFi list nor the relay configuration.
-    const bool relayOk = buildRelayConfig(fields, relayCur_, relay, errors);
-    if (!errors.empty()) return rejected(fields, errors);
+    buildRelayConfig(fields, relayCur_, relay, errors);  // problems land in `errors`
+    if (!errors.empty()) {
+      say("save: rejected - " + std::to_string(static_cast<long long>(errors.size())) + " validation error(s), nothing written");
+      for (size_t i = 0; i < errors.size(); ++i) say("save:   " + errors[i]);
+      return rejected(fields, errors);
+    }
 
-    if (!store_.save(nets, count)) {
+    say("save: valid - " + std::to_string(static_cast<long long>(count)) + " network(s), relay " + relay.host + ":" +
+        std::to_string(static_cast<long long>(relay.port)) + " - writing the WiFi list to flash");
+    if (!store_.save(nets.data(), count)) {
+      say("save: FAILED - the WiFi list could not be written to flash");
       return textReply(500, "Could not write the credentials to flash; nothing was changed - try again");
     }
+    say("save: WiFi list written - writing the relay configuration to flash");
     if (!relayStore_.save(relay)) {
       // The WiFi list is in; the relay configuration refused to persist.
       // Stay in setup: the next save rewrites both (the WiFi rows the form
       // brings back are now the stored ones, and their passwords are kept
       // by the blank-field rule).
+      say("save: FAILED - the relay configuration could not be written to flash");
       return textReply(500, "Could not write the relay configuration to flash - the WiFi list was saved; try again");
     }
     saved_ = true;
+    say("save: both flash stores written - answering, the node restarts next");
     return restartingPage("Saved - the node will join your WiFi and report to your relay");
   }
 
@@ -722,6 +754,7 @@ class SetupForm {
   int storedCount_ = 0;
   std::string token_;
   bool saved_;
+  ISetupLog* log_ = nullptr;
 };
 
 // ── The setup session ───────────────────────────────────────────────────
@@ -733,12 +766,6 @@ struct ISetupNet {
   virtual bool startAccessPoint(const std::string& ssid, const std::string& password) = 0;
   virtual void poll() = 0;  // serve DNS + HTTP; never blocks for long
   virtual void stop() = 0;  // access point and servers off, WiFi left clean for the normal flow
-};
-
-// Serial log lines (optional). The password is never passed to this.
-struct ISetupLog {
-  virtual ~ISetupLog() {}
-  virtual void line(const std::string& text) = 0;
 };
 
 enum class SetupStep { Running, Handback, Restart };
