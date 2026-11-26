@@ -671,6 +671,15 @@ static void testSetupDecisions() {
   assert(espnet::bootPortalDecision(false, true, 2, false) == PortalDecision::Portal);
   assert(espnet::bootPortalDecision(false, true, 2, true) == PortalDecision::Normal);
   assert(espnet::bootPortalDecision(false, true, 0, true) == PortalDecision::Portal); // defensive
+
+  // #152: how long a portal boot may serve. A factory node (no usable
+  // credentials) serves forever — the form is its only way forward; a node
+  // that holds credentials gets the bounded window so the reboot after a
+  // save actually TRIES the saved network instead of being captured by its
+  // own portal forever.
+  assert(espnet::bootPortalServeCapMs(true, 60000) == 0);
+  assert(espnet::bootPortalServeCapMs(false, 60000) == 60000);
+  assert(espnet::bootPortalServeCapMs(false, 1) == 1);
 }
 
 // ── task #135: the setup form (SetupForm) ──

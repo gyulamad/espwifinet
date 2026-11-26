@@ -21,6 +21,7 @@ inline void digitalWrite(uint8_t, int) {}
 
 unsigned long millis();
 void delay(unsigned long);
+inline void yield() {} // the cores' cooperative yield: feeds the ESP8266 watchdog
 
 class String {
   std::string s_;

@@ -67,6 +67,22 @@
 #ifndef DEFAULT_MIN_LOG_LEVEL
 #define DEFAULT_MIN_LOG_LEVEL 0
 #endif
+// ── the setup WiFi's bounded windows (task #152) ──
+// A factory node (no credentials anywhere) serves its setup WiFi FOREVER —
+// nothing to join, the form is the only way forward. A node that HOLDS
+// credentials (the reboot right after a save, an armed maintenance window)
+// gets a bounded window instead, then hands back to the normal flow: the
+// first connect is what completes the install, and a forever-portal would
+// capture the node so the saved network is never even tried. An
+// unprovisioned node whose joins keep failing reopens the portal in these
+// windows on its own (its only interface is the portal — the dashboard is
+// unreachable until the first connect).
+#ifndef SETUP_SERVE_MAX_MS
+#define SETUP_SERVE_MAX_MS 60000  // one bounded portal window
+#endif
+#ifndef SETUP_RETRY_WINDOW_MS
+#define SETUP_RETRY_WINDOW_MS 60000  // pause between windows while joins keep failing
+#endif
 
 // ── credentials: the flash store is the ONLY source (task #135 v2) ──
 // config.h carries no WiFi list anymore: the networks picked on the setup
@@ -96,6 +112,7 @@ static bool provisionedDone = false;   // the store's provisioned flag, mirrored
 // no captive portal reappears where anyone nearby could join it.
 static espnet::SetupPortal portal;
 static bool portalActive = false;
+static uint32_t portalClosedMs = 0;  // when the last window handed back (#152)
 
 // ── identity: "esp-XXXXXXXX" derived from the chip id (unique out of the
 // box) — nothing to edit anywhere (#140). ──
@@ -277,7 +294,7 @@ void setup() {
                  "join '%s' (password in INSTALL.md) and pick the network(s) + relay there",
                  provisionedDone ? 1 : 0, wifiStore.setupArmed() ? 1 : 0, relayConfigured ? 1 : 0,
                  portal.ssid().c_str());
-    portal.start(0); // serve forever
+    portal.start(espnet::bootPortalServeCapMs(effectiveCount == 0, SETUP_SERVE_MAX_MS)); // factory: forever; holds credentials: bounded window (#152)
     portalActive = true;
   }
 
@@ -296,9 +313,12 @@ void loop() {
       return;
     }
     if (step == espnet::SetupStep::Handback) {
-      // Defensive: the sketch always serves forever (serveCapMs 0), so a
-      // handback should not happen. Resume the normal flow anyway.
+      // The bounded window expired (#152): resume the normal flow so the
+      // saved credentials are actually tried — this is what completes the
+      // first install (or reopens the window below when no join ever
+      // succeeds on an unprovisioned node).
       portalActive = false;
+      portalClosedMs = millis();
       nodeLog.logf(espnet::LOG_INFO, "setup: closed - resuming the normal WiFi flow");
       wifiMulti.begin(effectiveNets, effectiveCount, &nodeLog);
     }
@@ -327,9 +347,22 @@ void loop() {
     }
     ota.tick(FW);
   }
-  // No fallback portal: a provisioned node in an outage just retries
-  // (bootPortalDecision). Re-entry is deliberate — arm SETUP_MODE from the
-  // dashboard and power-cycle the node.
 
+  // #152: the first install is still incomplete (credentials saved but no
+  // join ever succeeded) and no portal is up: reopen the setup WiFi in
+  // bounded windows so a wrong password can always be fixed from the phone.
+  // The portal and the join attempts alternate — a scan or connect while the
+  // AP serves would switch the radio's channel and kill the phone's session
+  // mid-form. A provisioned node never comes back here: its outage just
+  // retries, re-entry is deliberate (arm SETUP_MODE from the dashboard).
+  if (!provisionedDone && portalClosedMs != 0 &&
+      static_cast<uint32_t>(millis() - portalClosedMs) >= SETUP_RETRY_WINDOW_MS) {
+    portalClosedMs = 0; // one window per pause; the next handback restarts the cycle
+    portal.start(SETUP_SERVE_MAX_MS);
+    portalActive = true;
+    nodeLog.logf(espnet::LOG_WARN,
+                 "wifi: still not provisioned - reopening the setup WiFi '%s' for a bounded window",
+                 portal.ssid().c_str());
+  }
   flushLogs();
 }

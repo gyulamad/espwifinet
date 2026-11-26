@@ -99,6 +99,14 @@
 #ifndef ESPNET_SETUP_AP_STATIONS
 #define ESPNET_SETUP_AP_STATIONS 4
 #endif
+// How long answer() keeps trying to push a reply into a socket whose send
+// buffer is momentarily full (task #152): the radio can sit silent for a
+// while right after the save's flash writes, and a phone ACKing slowly must
+// never lose the "saved, restarting" page. yield() between attempts keeps
+// the watchdog fed; the deadline bounds how long one slot may hold the loop.
+#ifndef ESPNET_SETUP_REPLY_TMO_MS
+#define ESPNET_SETUP_REPLY_TMO_MS 2000
+#endif
 
 #ifndef SETUP_INFO
 #define SETUP_INFO(...) Serial.printf("[setup] " __VA_ARGS__), Serial.println()
@@ -347,14 +355,21 @@ class ArduinoSetupNet : public ISetupNet {
   void answer(Slot& s, const HttpReply& reply) {
     const std::string bytes = setupFormatReply(reply);
     size_t sent = 0;
-    int stalls = 0;
-    while (sent < bytes.size() && stalls < 3) {  // a socket may take less than offered; a dead one takes nothing
+    // A full send buffer (a phone ACKing slowly, or the radio still draining
+    // the backlog the save's flash writes just caused) makes write() return
+    // 0: keep trying with a yield between attempts instead of counting
+    // instant failures — three back-to-back zero writes happen in
+    // microseconds and would silently drop the reply, which the phone then
+    // waits for forever (#152). The deadline and the connected() checks
+    // bound the loop: a dead or stuck client releases the slot either way.
+    const uint32_t deadline = millis() + ESPNET_SETUP_REPLY_TMO_MS;
+    while (sent < bytes.size()) {
+      if (!s.client.connected() || static_cast<int32_t>(millis() - deadline) >= 0) break;
       const size_t k = s.client.write(reinterpret_cast<const uint8_t*>(bytes.data()) + sent, bytes.size() - sent);
       if (k == 0) {
-        ++stalls;
+        yield();  // feeds the watchdog and gives the radio its send slot back
       } else {
         sent += k;
-        stalls = 0;
       }
     }
     release(s);

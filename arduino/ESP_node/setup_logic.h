@@ -1038,4 +1038,17 @@ inline PortalDecision bootPortalDecision(bool setupArmed, bool provisioned, int 
   return PortalDecision::Normal;
 }
 
+// How long a portal boot may serve before it hands back to the normal flow
+// (task #152). A FACTORY node (no usable credentials anywhere) has nothing
+// to join — its only way forward is the form, so it serves FOREVER (0). A
+// node that HOLDS credentials (the reboot right after a save, an armed
+// maintenance window, the relay-missing migration) must get its normal
+// scan/connect flow back: the first connect is what completes the install,
+// and a forever-portal would capture the node so the saved network is never
+// even tried — the exact "save and nothing happens" the bounded window
+// exists to prevent. The sketch passes its SETUP_SERVE_MAX_MS as `boundedMs`.
+inline uint32_t bootPortalServeCapMs(bool factoryEmpty, uint32_t boundedMs) {
+  return factoryEmpty ? 0 : boundedMs;
+}
+
 } // namespace espnet
