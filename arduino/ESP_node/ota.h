@@ -37,23 +37,27 @@ namespace espnet {
 // same name in <Updater.h> (extern UpdaterClass Update;, 2.7.4 and 3.x
 // alike) — the earlier attempt called `Updater`, which no core declares,
 // and the compiler's own suggestion ("did you mean 'Update'?") was the
-// answer. What really differs between the cores: the error getter and how
-// a failed attempt is abandoned (the ESP8266 core has no abort() —
-// clearError() drops the failed attempt's state so the next one can begin
-// again). The headers above declare the object the compiled board's core
-// actually carries; the flow only calls these.
+// answer. What really differs between the cores: the error getter's NAME and
+// RETURN TYPE and how a failed attempt is abandoned (the ESP8266 core has no
+// abort() — clearError() drops the failed attempt's state so the next one can
+// begin again). On the ESP32 core the getter is const char* errorString(),
+// on the ESP8266 core String getErrorString() — the third NodeMCU error
+// ("cannot convert 'String' to 'const char*' in return") was the previous
+// attempt typing the ESP8266 getter like the ESP32 one. flasherError()
+// normalizes both to String, and the one %s call site reads .c_str() from
+// the temporary (which lives to the end of the logf full-expression).
 #if defined(ESP32)
 inline bool flasherBegin(size_t size) { return Update.begin(size); }
 inline size_t flasherWrite(WiFiClient& client) { return Update.writeStream(client); }
 inline bool flasherEnd(bool force) { return Update.end(force); }
 inline void flasherDropFailed() { Update.abort(); }
-inline const char* flasherError() { return Update.errorString(); }
+inline String flasherError() { return Update.errorString(); }  // real core: const char* errorString()
 #else
 inline bool flasherBegin(size_t size) { return Update.begin(size); }
 inline size_t flasherWrite(WiFiClient& client) { return Update.writeStream(client); }
 inline bool flasherEnd(bool force) { return Update.end(force); }
 inline void flasherDropFailed() { Update.clearError(); }
-inline const char* flasherError() { return Update.getErrorString(); }
+inline String flasherError() { return Update.getErrorString(); }  // real core: String getErrorString()
 #endif
 
 const uint32_t OTA_CHECK_SECONDS = 60;   // between version checks
@@ -154,7 +158,7 @@ class OtaUpdater {
     const bool ok = flasherEnd(true) && written == (size_t)size;
     if (!ok) {
       log_->logf(LOG_ERROR, "ota: wrote %u/%d bytes, err %s", (unsigned)written, size,
-                 flasherError());
+                 flasherError().c_str());
       flasherDropFailed();
     }
     http.end();

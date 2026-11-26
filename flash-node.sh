@@ -6,6 +6,11 @@
 #   ./flash-node.sh --port /dev/ttyACM0      # pick the port yourself
 #   ./flash-node.sh --erase                  # factory reset BEFORE the upload
 #
+# The port is auto-detected from `arduino-cli board list`; a port whose board
+# reads as type UNKNOWN (most clone boards — the list row has no FQBN) is
+# used all the same, because the FQBN for the upload comes from --board, not
+# from the USB identification (task #165).
+#
 # It compiles arduino/ESP_node for the board and uploads it with arduino-cli
 # (the same two commands the manual section shows). The compiled image is the
 # same one the dashboard serves for OTA, so what you flash by cable and what
@@ -64,8 +69,12 @@ command -v arduino-cli >/dev/null 2>&1 || die "arduino-cli not found - install i
 # ── the port ─────────────────────────────────────────────────────────────
 if [ -z "$PORT" ]; then
   say "no --port given: looking for a board with arduino-cli board list"
-  PORT="$(arduino-cli board list 2>/dev/null | awk -F'\t' '$1 ~ /\/dev\/(ttyUSB|ttyACM|cu\.usb)/ { print $1; exit }')"
-  [ -n "$PORT" ] || die "no board found on a USB serial port - plug the node in, or pass --port /dev/ttyUSB0 (Windows: COM3-style)"
+  # task #165: cut the port out by its own /dev/... token instead of parsing
+  # columns — board list renders tab-separated in one version and space-
+  # aligned in another, and the plugged-in NodeMCU's row reads "Unknown" with
+  # no FQBN at all (which the column parse treated as no board at all).
+  PORT="$(arduino-cli board list 2>/dev/null | grep -oE '/dev/(ttyUSB|ttyACM|cu\.usb)[0-9A-Za-z._-]*' | head -n 1)"
+  [ -n "$PORT" ] || die "no USB serial port in arduino-cli board list - plug the node in, or pass --port /dev/ttyUSB0 (Windows: COM3-style)"
 fi
 [ -e "$PORT" ] || die "serial port $PORT does not exist (arduino-cli board list shows the ports)"
 say "board: $BOARD ($FQBN), port: $PORT"

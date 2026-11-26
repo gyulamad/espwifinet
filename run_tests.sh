@@ -7,6 +7,7 @@
 #   4. C++ logic tests (node firmware's net/log/ota logic against stubs, g++)
 #   5. discovery logic + glue tests (#160, same two-board build)
 #   6. firmware stack budget (frame sizes, tests/stack_budget.sh, g++)
+#   7. flash-node.sh port detection (#165: stub arduino-cli, unknown-board tables)
 #
 # Usage: ./run_tests.sh   (installs the relay's npm dependencies if missing)
 set -u
@@ -97,6 +98,15 @@ echo "── install/flash/ota scripts: bash -n (#159) ──"
 for sh in install-relay.sh install-dash.sh flash-node.sh ota-deploy.sh; do
   bash -n "$sh" || fail=1
 done
+
+# #165: flash-node.sh's port detection is a text-parse step that must cope
+# with the plugged-in node board list CANNOT identify (type Unknown, no
+# FQBN) — the tester's NodeMCU 1.0 sat on /dev/ttyUSB0 while the script
+# answered "no board found". tests/shell/test_flash_node.sh drives the real
+# script against a stub arduino-cli serving exactly those tables.
+echo ""
+echo "── flash-node.sh port detection (#165) ──"
+bash tests/shell/test_flash_node.sh || fail=1
 
 # #144: the dashboard's PHP side now has its own coverage - a syntax lint of
 # every php file plus a real e2e of setup.php's first-run write (the

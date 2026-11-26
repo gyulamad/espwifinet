@@ -5,11 +5,14 @@
 // object `Updater`, which no core declares: the desktop build compiled the
 // mirror of a mirror and passed while the real NodeMCU 1.0 build failed with
 // "'Updater' was not declared in this scope; did you mean 'Update'?" — the
-// compiler pointing at the right name. The core's real surface differences
-// are kept on purpose (no abort() here — clearError() drops a failed
-// attempt, and the error getter is getErrorString()): if ota.h's flow ever
-// calls the ESP32-only call again, the ESP8266 desktop build fails to
-// compile instead of hiding it. See Update.h for the ESP32 stub.
+// compiler pointing at the right name. The same discipline now covers the
+// error getter: the real core declares String getErrorString() — an earlier
+// attempt mirrored the NAME but typed the return const char*, so the real
+// NodeMCU build failed with "cannot convert 'String' to 'const char*' in
+// return" while the desktop suite kept passing. This stub returns the core's
+// String, so that mismatch again fails here instead of on the board. The
+// other real-surface differences are kept on purpose (no abort() here —
+// clearError() drops a failed attempt). See Update.h for the ESP32 stub.
 #pragma once
 #include "WiFiClient.h"
 
@@ -19,7 +22,7 @@ class UpdaterStub {
   size_t writeStream(WiFiClient&) { return written; }
   bool end(bool) { return endSucceeds; }
   void clearError() {}
-  const char* getErrorString() { return "stub: not on hardware"; }
+  String getErrorString() const { return String("stub: not on hardware"); }
   inline static bool beginSucceeds = false;
   inline static size_t written = 0;
   inline static bool endSucceeds = false;
