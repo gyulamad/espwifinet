@@ -311,6 +311,15 @@ struct RelayConfig {
 static const size_t RELAY_CONFIG_BASE = 3000;
 static const size_t RELAY_CONFIG_REGION_MAX = 1096;  // 4096 - 3000
 
+// The size the node asks the EEPROM emulation for: BOTH regions, always, from
+// every backend (task #152). On the ESP32 the "EEPROM" is one NVS blob and
+// EEPROM.begin(size) RESIZES it in flash: a begin() smaller than the stored
+// blob truncates it for good. The WiFi backend used to begin(3000) and the
+// relay backend begin(4096), so every boot cut the relay region (offset 3000)
+// off the blob and re-expanded it with 0xFF - the saved relay settings were
+// gone after the first restart and the node re-opened its setup WiFi forever.
+static const size_t EEPROM_TOTAL_SIZE = RELAY_CONFIG_BASE + RELAY_CONFIG_REGION_MAX;
+
 inline bool validRelayHost(const std::string& s) {
   if (s.empty() || s.size() > 64) return false;
   if (!isPrintableAsciiText(s)) return false;

@@ -661,16 +661,21 @@ static void testSetupDecisions() {
   // provisioned always opens it (factory, or saved-but-never-connected);
   // a provisioned node NEVER opens it on its own (an outage just retries)
   using espnet::PortalDecision;
-  assert(espnet::bootPortalDecision(true, false, 3, false) == PortalDecision::Portal);
-  assert(espnet::bootPortalDecision(true, true, 3, true) == PortalDecision::Portal);
-  assert(espnet::bootPortalDecision(false, false, 0, false) == PortalDecision::Portal);
-  assert(espnet::bootPortalDecision(false, false, 2, false) == PortalDecision::Portal);
+  // (armed, usable networks, relay configured)
+  assert(espnet::bootPortalDecision(true, 3, false) == PortalDecision::Portal);
+  assert(espnet::bootPortalDecision(true, 3, true) == PortalDecision::Portal);
+  assert(espnet::bootPortalDecision(false, 0, false) == PortalDecision::Portal); // factory
+  assert(espnet::bootPortalDecision(false, 0, true) == PortalDecision::Portal);  // nothing to join
   // #140: a provisioned node WITHOUT a relay configuration still opens the
   // portal once — that is the migration path of a v2 node whose relay
   // settings were compiled in until now
-  assert(espnet::bootPortalDecision(false, true, 2, false) == PortalDecision::Portal);
-  assert(espnet::bootPortalDecision(false, true, 2, true) == PortalDecision::Normal);
-  assert(espnet::bootPortalDecision(false, true, 0, true) == PortalDecision::Portal); // defensive
+  assert(espnet::bootPortalDecision(false, 2, false) == PortalDecision::Portal);
+  // #152: credentials + relay = the normal flow. This is ALSO the reboot right
+  // after the setup form's save (provisioned is still false until the first
+  // connect): the node must start joining and reporting, not reopen its own
+  // WiFi. A never-connected node whose joins fail gets the portal back from
+  // the sketch's retry window (see testSketchBootsIntoJoinAfterSave).
+  assert(espnet::bootPortalDecision(false, 2, true) == PortalDecision::Normal);
 
   // #152: how long a portal boot may serve. A factory node (no usable
   // credentials) serves forever — the form is its only way forward; a node
@@ -1237,7 +1242,7 @@ static void testHttpRequestReader() {
 static void testSketchCompiles() {
   setup(); // the stub boot: blank store, NO compiled list (v2) -> factory
   assert(effectiveCount == 0);
-  assert(portalActive); // bootPortalDecision: not provisioned -> the setup WiFi
+  assert(portalActive); // bootPortalDecision: nothing to join with -> the setup WiFi
   assert(std::string(DEVICE).rfind("esp-", 0) == 0);
   assert(portal.ssid().rfind("espnode-setup-", 0) == 0);
   assert(!ESP.restarted);
@@ -1249,6 +1254,128 @@ static void testSketchCompiles() {
   for (int i = 0; i < 3; ++i) loop();
   assert(portalActive);
   assert(!ESP.restarted);
+}
+
+// ── task #152: the reboot right after the setup form's save goes straight to
+// joining the saved network (it used to re-open its own setup WiFi and sit
+// in it), and a node that never managed to connect still gets the setup
+// WiFi back in a bounded window so a wrong password stays fixable.
+static void testSketchBootsIntoJoinAfterSave() {
+  EEPROM = EEPROMClass();
+  {  // what the setup form's save left in flash
+    espnet::EepromRegionBackend wifiBe(0, espnet::WIFI_STORE_REGION_MAX);
+    espnet::EepromRegionBackend relayBe(espnet::RELAY_CONFIG_BASE, espnet::RELAY_CONFIG_REGION_MAX);
+    wifiBe.begin();
+    relayBe.begin();
+    espnet::WifiStore ws;
+    ws.begin(&wifiBe);
+    espnet::RelayConfigStore rs;
+    rs.begin(&relayBe);
+    espnet::WifiStoreNet nets[1];
+    nets[0].ssid = "Home";
+    nets[0].pass = "abcdefgh";
+    espnet::RelayConfig cfg;
+    cfg.host = "192.168.1.135";
+    cfg.port = 8091;
+    cfg.key = "fleet-key-123";
+    assert(ws.save(nets, 1) && rs.save(cfg));
+  }
+  EEPROM.powerCycle();  // the restart
+  // the sketch's statics as a real reboot leaves them (the previous test booted the same globals)
+  portal.stop();
+  portalActive = false;
+  portalClosedMs = 0;
+  provisionedDone = false;
+  effectiveCount = 0;
+  storedCount = 0;
+  relayConfigured = false;
+  ESP.restarted = false;
+  Stream::serialOut.clear();
+
+  setup();
+  assert(effectiveCount == 1 && relayConfigured && !provisionedDone);
+  assert(!portalActive);  // NORMAL flow: it joins first, the setup WiFi stays off
+  assert(Stream::serialOut.find("setup saved - joining 1 stored network(s), relay 192.168.1.135:8091") != std::string::npos);
+  assert(Stream::serialOut.find("opening the setup WiFi") == std::string::npos);
+  assert(!ESP.restarted);
+
+  // it keeps running the normal flow (scan/connect), the portal stays off ...
+  WiFi.wifiStatus = WL_DISCONNECTED;
+  for (int i = 0; i < 3; ++i) loop();
+  assert(!portalActive);
+  // ... until a whole retry window passes without a join: the setup WiFi
+  // comes back (bounded), exactly once per window
+  fakeNow += SETUP_RETRY_WINDOW_MS + 1;
+  loop();
+  assert(portalActive);
+  assert(Stream::serialOut.find("still not provisioned - reopening the setup WiFi") != std::string::npos);
+
+  portal.stop();
+  portalActive = false;
+  WiFi.wifiStatus = WL_CONNECTED;
+  EEPROM = EEPROMClass();
+}
+
+// ── task #152: both flash regions survive a restart (the REAL boot sequence
+// over the stub EEPROM that behaves like each core). On the ESP32 the
+// EEPROM is one NVS blob and begin(size) resizes it: the sketch used to call
+// begin(3000) and begin(4096), so every boot truncated the blob to 3000 and
+// re-expanded it - the relay region (offset 3000) was erased, the saved
+// node reported relay=0 and re-opened its setup WiFi forever.
+static void testFlashRegionsSurviveRestart() {
+  EEPROM = EEPROMClass();  // blank flash
+
+  struct Boot {  // exactly what setup() does with the two backends
+    espnet::EepromRegionBackend wifiBe{0, espnet::WIFI_STORE_REGION_MAX};
+    espnet::EepromRegionBackend relayBe{espnet::RELAY_CONFIG_BASE, espnet::RELAY_CONFIG_REGION_MAX};
+    espnet::WifiStore wifi;
+    espnet::RelayConfigStore relay;
+    Boot() {
+      wifiBe.begin();
+      wifi.begin(&wifiBe);
+      relayBe.begin();
+      relay.begin(&relayBe);
+    }
+  };
+
+  {  // first boot (factory) + the setup form's save
+    Boot b;
+    espnet::WifiStoreNet nets[1];
+    nets[0].ssid = "Home";
+    nets[0].pass = "abcdefgh";
+    espnet::RelayConfig cfg;
+    cfg.host = "192.168.1.135";
+    cfg.port = 8091;
+    cfg.key = "fleet-key-123";
+    assert(b.wifi.save(nets, 1));
+    assert(b.relay.save(cfg));
+  }
+  for (int restart = 1; restart <= 3; ++restart) {  // restarts must not lose either region
+    EEPROM.powerCycle();
+    Boot b;
+    espnet::WifiStoreNet back[espnet::WIFI_STORE_MAX_NETS];
+    assert(b.wifi.load(back, espnet::WIFI_STORE_MAX_NETS) == 1);
+    assert(back[0].ssid == "Home" && back[0].pass == "abcdefgh");
+    espnet::RelayConfig cfg;
+    assert(b.relay.load(cfg));
+    assert(cfg.host == "192.168.1.135" && cfg.port == 8091 && cfg.key == "fleet-key-123");
+  }
+
+  // the first-connect flag write must not disturb the relay region either
+  {
+    EEPROM.powerCycle();
+    Boot b;
+    espnet::WifiStoreNet back[espnet::WIFI_STORE_MAX_NETS];
+    assert(b.wifi.load(back, espnet::WIFI_STORE_MAX_NETS) == 1);
+    assert(b.wifi.markProvisioned());
+  }
+  EEPROM.powerCycle();
+  Boot b;
+  espnet::RelayConfig cfg;
+  assert(b.relay.load(cfg) && cfg.host == "192.168.1.135");
+  espnet::WifiStoreNet back[espnet::WIFI_STORE_MAX_NETS];
+  assert(b.wifi.load(back, espnet::WIFI_STORE_MAX_NETS) == 1 && b.wifi.provisioned());
+  EEPROM = EEPROMClass();  // leave the global flash blank for the tests after this one
 }
 
 int main() {
@@ -1288,8 +1415,12 @@ int main() {
   printf("PASS setup session\n");
   testHttpRequestReader();
   printf("PASS http request reader\n");
+  testFlashRegionsSurviveRestart();
+  printf("PASS flash regions survive a restart\n");
   testSketchCompiles();
   printf("PASS sketch compiles\n");
+  testSketchBootsIntoJoinAfterSave();
+  printf("PASS saved node boots into the normal flow\n");
   printf("tests/cpp: all passed\n");
   return 0;
 }

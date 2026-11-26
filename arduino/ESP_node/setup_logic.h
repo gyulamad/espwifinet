@@ -1041,27 +1041,29 @@ inline int effectiveNetworksCount(const WifiStoreNet* stored, int storedCount) {
   return storedCount;
 }
 
-// ── The boot decision (v2/v3): when the setup WiFi opens ────────────────
-//   - setup ARMED (the dashboard's SETUP_MODE maintenance switch): always
-//     portal — the operator deliberately asked for it, on any node state;
-//   - NOT provisioned (the first successful WiFi connect never happened):
-//     portal — the first install is still incomplete, so the captive page
-//     is the node's only way forward (factory state, or credentials saved
-//     but never joined with);
-//   - NO relay configuration in flash (#140: host, port, key): portal —
-//     the node has nowhere to report; this also serves the migration of a
-//     provisioned v2 node whose relay settings were compiled in until now;
-//   - provisioned WITH a relay configuration: never — a WiFi outage
-//     retries with the normal flow; the captive portal must not reappear
-//     where anyone nearby could join it.
+// ── The boot decision: when the setup WiFi opens at boot ────────────────
+//   - setup ARMED (the dashboard's SETUP_MODE maintenance switch): portal —
+//     the operator deliberately asked for it, on any node state;
+//   - NO usable WiFi credentials (a factory node, or a damaged store):
+//     portal — nothing to join, the form is the only way forward;
+//   - NO relay configuration in flash (#140: host, port, key): portal — the
+//     node has nowhere to report; this also serves the migration of a node
+//     whose relay settings were compiled in until now;
+//   - credentials AND a relay configuration: NORMAL flow, provisioned or not
+//     (task #152). The reboot right after the setup form's save lands here:
+//     the node must start joining the saved network and reporting to the
+//     relay at once, not open its own WiFi again. Whether the first join
+//     ever succeeds is the SKETCH's follow-up, not the boot's: while the node
+//     is still unprovisioned and cannot join, the sketch reopens the portal
+//     in bounded windows (a wrong password must stay fixable from the phone).
+//     A provisioned node's outage just retries - the captive portal must not
+//     reappear where anyone nearby could join it.
 enum class PortalDecision { Portal, Normal };
 
-inline PortalDecision bootPortalDecision(bool setupArmed, bool provisioned, int usableNetworks,
-                                         bool relayConfigured) {
+inline PortalDecision bootPortalDecision(bool setupArmed, int usableNetworks, bool relayConfigured) {
   if (setupArmed) return PortalDecision::Portal;
-  if (!provisioned) return PortalDecision::Portal;
+  if (usableNetworks <= 0) return PortalDecision::Portal;
   if (!relayConfigured) return PortalDecision::Portal;
-  if (usableNetworks <= 0) return PortalDecision::Portal; // defensive: provisioned implies entries
   return PortalDecision::Normal;
 }
 

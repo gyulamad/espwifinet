@@ -105,11 +105,15 @@ static int effectiveCount = 0;
 static bool provisionedDone = false;   // the store's provisioned flag, mirrored
 
 // ── the setup WiFi (task #135 v2) ──
-// bootPortalDecision (setup_logic.h): it opens exactly when the first
-// install is not complete (factory, or saved-but-never-connected) or the
-// operator armed SETUP_MODE — and then serves FOREVER until the form saves
-// (the save also disarms). A provisioned node on a WiFi outage just retries:
-// no captive portal reappears where anyone nearby could join it.
+// bootPortalDecision (setup_logic.h): it opens at boot exactly when there is
+// nothing to join with (factory), no relay configuration, or the operator
+// armed SETUP_MODE — a factory node then serves FOREVER until the form saves
+// (the save also disarms). A node holding credentials and a relay
+// configuration boots into the NORMAL flow (task #152: the reboot after a
+// save starts joining at once); while it has never connected it reopens the
+// portal in bounded windows if the joins keep failing. A provisioned node on
+// a WiFi outage just retries: no captive portal reappears where anyone
+// nearby could join it.
 static espnet::SetupPortal portal;
 static bool portalActive = false;
 static uint32_t portalClosedMs = 0;  // when the last window handed back (#152)
@@ -285,25 +289,37 @@ void setup() {
     nodeLog.logf(espnet::LOG_INFO, "credentials: flash store empty or damaged (%d usable)", storedCount);
   }
 
+  // The portal object is always prepared (it loads the stored rows and the
+  // setup SSID): the loop may have to open it later, see below.
+  portal.begin(wifiStore, relayConfigStore);
+
   // The boot decision (setup_logic.h, desktop-tested): the setup WiFi opens
-  // exactly when the first install is not complete or SETUP_MODE is armed —
-  // and then serves FOREVER until the form saves. A provisioned node NEVER
-  // auto-opens it (a WiFi outage just retries).
+  // at boot when there is nothing to join with, no relay configuration, or
+  // SETUP_MODE is armed. Credentials + relay configuration = the normal
+  // flow, also right after a save (task #152).
   const bool portalWanted =
-      espnet::bootPortalDecision(wifiStore.setupArmed(), provisionedDone,
-                                 effectiveCount, relayConfigured) == espnet::PortalDecision::Portal;
+      espnet::bootPortalDecision(wifiStore.setupArmed(), effectiveCount, relayConfigured) ==
+      espnet::PortalDecision::Portal;
   if (portalWanted) {
-    portal.begin(wifiStore, relayConfigStore);
     nodeLog.logf(espnet::LOG_WARN,
-                 "first install not complete (provisioned=%d armed=%d relay=%d) - opening the setup WiFi; "
+                 "setup needed (credentials=%d relay=%d armed=%d provisioned=%d) - opening the setup WiFi; "
                  "join '%s' (password in INSTALL.md) and pick the network(s) + relay there",
-                 provisionedDone ? 1 : 0, wifiStore.setupArmed() ? 1 : 0, relayConfigured ? 1 : 0,
-                 portal.ssid().c_str());
+                 effectiveCount, relayConfigured ? 1 : 0, wifiStore.setupArmed() ? 1 : 0,
+                 provisionedDone ? 1 : 0, portal.ssid().c_str());
     const uint32_t serveCapMs = espnet::bootPortalServeCapMs(effectiveCount == 0, SETUP_SERVE_MAX_MS);
     nodeLog.logf(espnet::LOG_INFO, "setup: portal window %s",
                  serveCapMs == 0 ? "unbounded (factory node, serves until saved)" : "bounded (the node holds credentials)");
     portal.start(serveCapMs); // factory: forever; holds credentials: bounded window (#152)
     portalActive = true;
+  } else if (!provisionedDone) {
+    // Saved credentials + relay, never connected yet (the reboot after the
+    // setup form's save): join FIRST. If no join succeeds for a whole retry
+    // window the loop reopens the portal (the timer below), so a wrong
+    // password can still be fixed from the phone.
+    portalClosedMs = millis();
+    nodeLog.logf(espnet::LOG_INFO,
+                 "setup saved - joining %d stored network(s), relay %s:%d; the setup WiFi reopens in %lu s if no join succeeds",
+                 effectiveCount, relayCfg.host.c_str(), relayCfg.port, (unsigned long)(SETUP_RETRY_WINDOW_MS / 1000));
   }
 
   wifiMulti.begin(effectiveNets, effectiveCount, &nodeLog);

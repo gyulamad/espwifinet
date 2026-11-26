@@ -24,7 +24,12 @@ class EepromRegionBackend : public WifiStoreBackend {
  public:
   EepromRegionBackend(size_t base, size_t size) : base_(base), size_(size) {}
 
-  void begin() { EEPROM.begin(static_cast<int>(base_ + size_)); }
+  // Starts the shared EEPROM at the size of the WHOLE space (both regions),
+  // whichever backend asks: EEPROM.begin() resizes the stored blob on the
+  // ESP32, so a smaller size than the one stored would truncate the other
+  // region away (task #152, see EEPROM_TOTAL_SIZE). The same size twice is a
+  // no-op for the blob (and every write here commits at once on both cores).
+  void begin() { EEPROM.begin(static_cast<size_t>(EEPROM_TOTAL_SIZE)); }
 
   bool read(char* buf, size_t max) override {
     if (buf == nullptr || max < size_) return false;
