@@ -34,7 +34,7 @@ static UpdateStub updateInstance;
 UpdateStub Update = updateInstance;
 #else
 static UpdaterStub updaterInstance;
-UpdaterStub Updater = updaterInstance;
+UpdaterStub Update = updaterInstance;   // the ESP8266 core names its flasher object Update (Updater.h)
 #endif
 Stream Serial;         // the real core's global port (stub Arduino.h declares it)
 EEPROMClass EEPROM;  // the credential store's flash region (#135)
@@ -268,7 +268,7 @@ static void testOtaCompile() {
 static void testOtaFlashFailurePath() {
   // task #165: with the relay serving a DIFFERENT version, tick() goes all
   // the way to the flash step, which must run through the COMPILED BOARD's
-  // flasher object (Update on the ESP32 core, Updater on the ESP8266 core —
+  // flasher object (named Update on BOTH cores; the ESP8266 core declares it in Updater.h —
   // the per-board adapters) and must log the flasher's own error without
   // restarting. The stub starts the flash and fails the write, so every
   // adapter (begin/writeStream/end/error/drop) runs on both desktop builds.

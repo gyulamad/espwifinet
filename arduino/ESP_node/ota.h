@@ -16,10 +16,10 @@
 #include "board.h"
 #include <WiFiClient.h>
 // The flasher header is per core (task #165): the ESP32 core ships its
-// updater as <Update.h>, the ESP8266 core the very same flasher as
-// <Updater.h> — there is no Update.h on the ESP8266 side, which is exactly
-// what the NodeMCU 1.0 build died on. board.h has already stopped every
-// other core with its #error, so one of the two macros is always defined.
+// updater as <Update.h>, the ESP8266 core the same flasher as <Updater.h>
+// — there is no Update.h on the ESP8266 side, which is exactly what the
+// NodeMCU 1.0 build died on. board.h has already stopped every other core
+// with its #error, so one of the two macros is always defined.
 #if defined(ESP32)
 #include <Update.h>
 #elif defined(ESP8266)
@@ -31,12 +31,17 @@
 namespace espnet {
 
 // One face over the two cores' flasher objects (task #165) so the update
-// flow below stays board-agnostic: the ESP32 core names its flasher Update,
-// the ESP8266 core ships the same flasher as Updater, and the two disagree
-// on the error getter and on how a failed attempt is abandoned (the ESP8266
-// core has no abort() — clearError() drops the failed attempt's state so
-// the next one can begin again). The headers above declare the object the
-// compiled board's core actually carries; the flow only calls these.
+// flow below stays board-agnostic. THE OBJECT'S NAME IS `Update` ON BOTH
+// CORES — this is what the NodeMCU 1.0 build's second error was about: the
+// ESP32 core declares it in <Update.h>, the ESP8266 core declares the very
+// same name in <Updater.h> (extern UpdaterClass Update;, 2.7.4 and 3.x
+// alike) — the earlier attempt called `Updater`, which no core declares,
+// and the compiler's own suggestion ("did you mean 'Update'?") was the
+// answer. What really differs between the cores: the error getter and how
+// a failed attempt is abandoned (the ESP8266 core has no abort() —
+// clearError() drops the failed attempt's state so the next one can begin
+// again). The headers above declare the object the compiled board's core
+// actually carries; the flow only calls these.
 #if defined(ESP32)
 inline bool flasherBegin(size_t size) { return Update.begin(size); }
 inline size_t flasherWrite(WiFiClient& client) { return Update.writeStream(client); }
@@ -44,11 +49,11 @@ inline bool flasherEnd(bool force) { return Update.end(force); }
 inline void flasherDropFailed() { Update.abort(); }
 inline const char* flasherError() { return Update.errorString(); }
 #else
-inline bool flasherBegin(size_t size) { return Updater.begin(size); }
-inline size_t flasherWrite(WiFiClient& client) { return Updater.writeStream(client); }
-inline bool flasherEnd(bool force) { return Updater.end(force); }
-inline void flasherDropFailed() { Updater.clearError(); }
-inline const char* flasherError() { return Updater.getErrorString(); }
+inline bool flasherBegin(size_t size) { return Update.begin(size); }
+inline size_t flasherWrite(WiFiClient& client) { return Update.writeStream(client); }
+inline bool flasherEnd(bool force) { return Update.end(force); }
+inline void flasherDropFailed() { Update.clearError(); }
+inline const char* flasherError() { return Update.getErrorString(); }
 #endif
 
 const uint32_t OTA_CHECK_SECONDS = 60;   // between version checks

@@ -115,6 +115,30 @@ else
   echo "php checks skipped (no php)"
 fi
 
+# Task #165: the real-board compile gate. The desktop C++ tests build the sketch headers against
+# stubs, and a stub can mirror a name the real core never had — #165's second NodeMCU 1.0 error
+# ('Updater' was not declared; the core names its flasher object Update) was exactly that blind
+# spot. When arduino-cli with the two cores is installed, the sketch is compiled for BOTH boards
+# the way the Arduino IDE compiles it, so a wrong core API or a wrong object name fails here and
+# not on the workbench. Like the php block above, a machine without the toolchain skips the gate
+# (install: arduino-cli core install esp32:esp32 esp8266:esp8266).
+echo ""
+echo "── real-board compile gate: arduino-cli, both boards (#165) ──"
+if command -v arduino-cli >/dev/null 2>&1; then
+  mkdir -p build/arduino
+  for pair in "${FQBN_ESP32:-esp32:esp32:esp32}" "${FQBN_ESP8266:-esp8266:esp8266:nodemcuv2}"; do
+    if arduino-cli compile --fqbn "$pair" --output-dir "build/arduino/${pair//:/_}" --warnings default arduino/ESP_node > "build/arduino/${pair//:/_}.log" 2>&1; then
+      echo "[PASS] arduino/ESP_node compiles for $pair"
+    else
+      echo "[FAIL] arduino/ESP_node does not compile for $pair (last 15 lines of the log):"
+      tail -15 "build/arduino/${pair//:/_}.log"
+      fail=1
+    fi
+  done
+else
+  echo "real-board compile skipped (no arduino-cli; the desktop stubs are not the real cores — install it so wrong core APIs fail here)"
+fi
+
 echo ""
 if [ "$fail" -eq 0 ]; then
   echo "ALL TESTS PASSED"
