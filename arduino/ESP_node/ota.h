@@ -1,6 +1,6 @@
 // ota.h — the node half of over-the-air firmware updates: check the relay's
-// version endpoint, download
-// the image when it differs from FW_VERSION, flash it with Update, restart.
+// version endpoint, download the image when it differs from FW_VERSION,
+// flash it with the compiled board's updater, restart.
 //
 //   GET  http://<relay>:<port>/firmware/version  ->  "<version>\n<md5>\n"
 //   GET  http://<relay>:<port>/firmware/node.bin
@@ -15,11 +15,41 @@
 #include <Arduino.h>
 #include "board.h"
 #include <WiFiClient.h>
+// The flasher header is per core (task #165): the ESP32 core ships its
+// updater as <Update.h>, the ESP8266 core the very same flasher as
+// <Updater.h> — there is no Update.h on the ESP8266 side, which is exactly
+// what the NodeMCU 1.0 build died on. board.h has already stopped every
+// other core with its #error, so one of the two macros is always defined.
+#if defined(ESP32)
 #include <Update.h>
+#elif defined(ESP8266)
+#include <Updater.h>
+#endif
 
 #include "remote_log.h"
 
 namespace espnet {
+
+// One face over the two cores' flasher objects (task #165) so the update
+// flow below stays board-agnostic: the ESP32 core names its flasher Update,
+// the ESP8266 core ships the same flasher as Updater, and the two disagree
+// on the error getter and on how a failed attempt is abandoned (the ESP8266
+// core has no abort() — clearError() drops the failed attempt's state so
+// the next one can begin again). The headers above declare the object the
+// compiled board's core actually carries; the flow only calls these.
+#if defined(ESP32)
+inline bool flasherBegin(size_t size) { return Update.begin(size); }
+inline size_t flasherWrite(WiFiClient& client) { return Update.writeStream(client); }
+inline bool flasherEnd(bool force) { return Update.end(force); }
+inline void flasherDropFailed() { Update.abort(); }
+inline const char* flasherError() { return Update.errorString(); }
+#else
+inline bool flasherBegin(size_t size) { return Updater.begin(size); }
+inline size_t flasherWrite(WiFiClient& client) { return Updater.writeStream(client); }
+inline bool flasherEnd(bool force) { return Updater.end(force); }
+inline void flasherDropFailed() { Updater.clearError(); }
+inline const char* flasherError() { return Updater.getErrorString(); }
+#endif
 
 const uint32_t OTA_CHECK_SECONDS = 60;   // between version checks
 const uint32_t OTA_RETRY_SECONDS = 300;  // extra wait after a failed update
@@ -110,17 +140,17 @@ class OtaUpdater {
       return false;
     }
 
-    if (!Update.begin(size)) {
+    if (!flasherBegin(size)) {
       log_->logf(LOG_ERROR, "ota: not enough flash for %d bytes", size);
       http.end();
       return false;
     }
-    const size_t written = Update.writeStream(client);
-    const bool ok = Update.end(true) && written == (size_t)size;
+    const size_t written = flasherWrite(client);
+    const bool ok = flasherEnd(true) && written == (size_t)size;
     if (!ok) {
       log_->logf(LOG_ERROR, "ota: wrote %u/%d bytes, err %s", (unsigned)written, size,
-                 Update.errorString());
-      Update.abort();
+                 flasherError());
+      flasherDropFailed();
     }
     http.end();
     return ok;

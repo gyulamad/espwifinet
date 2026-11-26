@@ -2,24 +2,40 @@
 // remote_log.h) against the stub Arduino environment and tests the parts
 // that run identical on hardware: the flat-JSON readers, the wire framing
 // (bytes identical to nodejs/esp-relay/lib/protocol.js), message dispatch
-// into the hooks, and the log queue. The radio/flash paths remain
-// hardware-test-only.
+// into the hooks, and the log queue. The radio paths and the real flashing
+// stay hardware-test-only — the desktop build walks the flash FAILURE path
+// against the per-board flasher stubs (task #165).
 
 #include <cassert>
 #include <cstdio>
 #include <string>
 
-#include "../stubs/WiFiClient.h" // pulls in Arduino.h + Update stub
+#include "../stubs/WiFiClient.h" // pulls in Arduino.h + the radio/HTTP stubs
 #include "../stubs/EEPROM.h"     // the credential store's flash surface (#135)
+// The flasher stub rides the board the build targets (task #165): ota.h
+// includes the ESP32 core's <Update.h> or the ESP8266 core's <Updater.h>,
+// and the flow below drives whichever object the compiled board carries.
+#if defined(ESP32)
+#include "../stubs/Update.h"
+using FlasherStub = UpdateStub;
+#else
+#include "../stubs/Updater.h"
+using FlasherStub = UpdaterStub;
+#endif
 
 // stub singletons the headers reference
 std::string Stream::serialOut;
 static EspStub espInstance;
 static WiFiStub wifiInstance;
-static UpdateStub updateInstance;
 EspStub& ESP = espInstance;
 WiFiStub& WiFi = wifiInstance;
+#if defined(ESP32)
+static UpdateStub updateInstance;
 UpdateStub Update = updateInstance;
+#else
+static UpdaterStub updaterInstance;
+UpdaterStub Updater = updaterInstance;
+#endif
 Stream Serial;         // the real core's global port (stub Arduino.h declares it)
 EEPROMClass EEPROM;  // the credential store's flash region (#135)
 static unsigned long fakeNow = 1000;
@@ -247,6 +263,45 @@ static void testOtaCompile() {
   ota.begin("10.0.0.1", 8080, &lg);
   ota.tick("1.0.0"); // fires the version check against the stub client
   printf("      (ota tick exercised against stub http endpoints)\n");
+}
+
+static void testOtaFlashFailurePath() {
+  // task #165: with the relay serving a DIFFERENT version, tick() goes all
+  // the way to the flash step, which must run through the COMPILED BOARD's
+  // flasher object (Update on the ESP32 core, Updater on the ESP8266 core —
+  // the per-board adapters) and must log the flasher's own error without
+  // restarting. The stub starts the flash and fails the write, so every
+  // adapter (begin/writeStream/end/error/drop) runs on both desktop builds.
+  WiFi.wifiStatus = WL_CONNECTED;
+  HTTPClient::code = 200;
+  HTTPClient::size = 321;
+  HTTPClient::body = String("9.9.9\ncafebabe\n");
+  FlasherStub::beginSucceeds = true;
+  FlasherStub::written = 0;
+  FlasherStub::endSucceeds = false;
+
+  espnet::RemoteLog lg;
+  lg.begin(nullptr);
+  espnet::OtaUpdater ota;
+  ota.begin("10.0.0.1", 8080, &lg);
+  ota.tick("1.0.0"); // relay serves 9.9.9 -> flash attempt -> stub write fails
+
+  espnet::LogEntry e;
+  bool sawWriteError = false;
+  while (lg.pop(e)) {
+    if (std::string(e.msg) == "ota: wrote 0/321 bytes, err stub: not on hardware") {
+      sawWriteError = true;
+    }
+  }
+  assert(sawWriteError); // the board's flasher error getter landed in the log
+
+  // restore the defaults the other tests rely on
+  HTTPClient::code = 404;
+  HTTPClient::size = -1;
+  HTTPClient::body = String();
+  FlasherStub::beginSucceeds = false;
+  FlasherStub::written = 0;
+  FlasherStub::endSucceeds = false;
 }
 
 static void testPickStrongest() {
@@ -1397,6 +1452,8 @@ int main() {
   printf("PASS wifi multi\n");
   testOtaCompile();
   printf("PASS ota compile\n");
+  testOtaFlashFailurePath();
+  printf("PASS ota flash failure path (per-board flasher, task #165)\n");
   testWifiStore();
   printf("PASS wifi store\n");
   testWifiStoreV2();
