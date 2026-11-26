@@ -2,8 +2,11 @@
 # run_tests.sh — the full test suite for the ESP Wifi Network base project.
 #   1. node unit tests (relay logic)
 #   2. node e2e test (spawns the real relay, drives it over TCP + HTTP)
-#   3. C++ logic tests (node firmware's net/log/ota logic against stubs, g++)
-#   4. firmware stack budget (frame sizes, tests/stack_budget.sh, g++)
+#   3. discovery e2e test (#160: the real relay answers UDP discovery probes;
+#      the firmware's real search code finds it over real sockets)
+#   4. C++ logic tests (node firmware's net/log/ota logic against stubs, g++)
+#   5. discovery logic + glue tests (#160, same two-board build)
+#   6. firmware stack budget (frame sizes, tests/stack_budget.sh, g++)
 #
 # Usage: ./run_tests.sh   (installs the relay's npm dependencies if missing)
 set -u
@@ -23,6 +26,11 @@ echo "── node unit tests ──"
 echo ""
 echo "── node e2e test ──"
 (cd nodejs/esp-relay && node tests/e2e/test_relay_e2e.js) || fail=1
+
+# #160: the discovery responder has its own e2e — the real relay answers on
+# UDP and the firmware's real search code (relay_find_logic.h, compiled into
+# tests/cpp/relay_find_tool.cpp) finds it over real sockets.
+(cd nodejs/esp-relay && node tests/e2e/test_discovery_e2e.js) || fail=1
 
 if command -v g++ >/dev/null 2>&1; then
   # #131: the sketch is one source tree for both boards — the desktop build
@@ -46,6 +54,27 @@ if command -v g++ >/dev/null 2>&1; then
     "$tmpbin32" || fail=1
   else
     echo "FAIL C++ build (esp32)"
+    fail=1
+  fi
+  # #160: the discovery logic + its Arduino glue, same two-board build.
+  echo ""
+  echo "── discovery tests (ESP8266 branch) ──"
+  tmpbin="$(mktemp -d)/test_relay_find_esp8266"
+  if g++ -std=gnu++17 -Wall -Wextra -DESP8266 -Itests/cpp/stubs \
+      tests/cpp/test_relay_find.cpp -o "$tmpbin"; then
+    "$tmpbin" || fail=1
+  else
+    echo "FAIL discovery build (esp8266)"
+    fail=1
+  fi
+  echo ""
+  echo "── discovery tests (ESP32 branch) ──"
+  tmpbin32="$(mktemp -d)/test_relay_find_esp32"
+  if g++ -std=gnu++17 -Wall -Wextra -DESP32 -Itests/cpp/stubs/esp32 -Itests/cpp/stubs \
+      tests/cpp/test_relay_find.cpp -o "$tmpbin32"; then
+    "$tmpbin32" || fail=1
+  else
+    echo "FAIL discovery build (esp32)"
     fail=1
   fi
 else

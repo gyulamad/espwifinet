@@ -19,6 +19,7 @@
 // makes the relay testable.
 
 const net = require('net');
+const dgram = require('dgram');
 const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -38,8 +39,10 @@ const baseConfig = (() => {
 })();
 const protocol = require('./lib/protocol');
 const devices = require('./lib/devices');
+const discovery = require('./lib/discovery');
 const { SettingsStore } = require('./lib/settings');
 const { LogWriter } = require('./lib/logwriter');
+const { Throttle } = require('./lib/throttle');
 const gpiostate = require('./lib/gpiostate');
 const firmware = require('./lib/firmware');
 const { envOr, errorMessage, readJsonFile, writeFileAtomic, ensureDir, truncate } = require('./lib/util');
@@ -58,6 +61,15 @@ const FIRMWARE_DIR = envOr(process.env, 'FIRMWARE_DIR', path.join(__dirname, 'fi
 // shows it offline. Nodes report every settings.statusIntervalMs, so 3x that
 // covers a lost status without hiding a real outage for long.
 const OFFLINE_AFTER_MS = Number(envOr(process.env, 'OFFLINE_AFTER_MS', baseConfig.offlineAfterMs));
+
+// ── Discovery (task #160): how a node finds us again when the address it
+// has stored stops answering (the router gave the Pi a new one). The node
+// asks the network with a small UDP probe; this answers it, proving it knows
+// nodeKey without ever sending the key (lib/discovery.js). Optional:
+// discoveryPort 0 switches it off. It must equal the firmware's
+// ESPNET_DISCOVERY_PORT, and the Pi's firewall has to let UDP in on it.
+const discoveryCfg = discovery.resolveDiscoveryPort(envOr(process.env, 'DISCOVERY_PORT', baseConfig.discoveryPort));
+for (const w of discoveryCfg.warnings) console.warn(`[config] ${w}`);
 
 const app = express();
 // Baseline security headers first, so every response carries them.
@@ -331,6 +343,58 @@ setInterval(() => {
   }
 }, PING_INTERVAL_MS);
 
+// ── Discovery responder (UDP, task #160) ──
+// A node whose stored relay address stops answering (the router gave the Pi
+// another address) asks the network "where is the relay?" with a tiny UDP
+// probe — to a broadcast address and to the other addresses of its subnet,
+// which is the only thing that reaches a relay from behind a NAT router —
+// and this answers it, proving it knows nodeKey without ever sending it (see
+// lib/discovery.js for the protocol). The node then stores the address it
+// was answered from and restarts into it. Entirely optional: if the port is
+// taken or the socket fails, the relay carries on and nodes simply keep
+// their stored address.
+const discoveryAnswerGap = new Throttle(100);          // at most ~10 answers a second to one address
+const discoveryLogGap = new Throttle(60 * 60 * 1000);  // a searching node asks often: log it once an hour
+
+function startDiscoveryResponder() {
+  if (discoveryCfg.port === 0) {
+    console.log('[relay] discovery is off (discoveryPort = 0)');
+    return;
+  }
+  if (!NODE_KEY) {
+    logsWarning('discovery responder not started: nodeKey is empty, so no node could check an answer');
+    return;
+  }
+  const socket = dgram.createSocket('udp4');
+  socket.on('error', (err) => {
+    logsWarning(`discovery responder stopped: ${errorMessage(err)} — nodes keep using the relay address they have stored`);
+    try { socket.close(); } catch (e) { /* already closed */ }
+  });
+  socket.on('message', (msg, rinfo) => {
+    try {
+      const nonce = discovery.parseProbe(msg);
+      if (!nonce) return; // not a probe: stay silent
+      const now = Date.now();
+      if (!discoveryAnswerGap.check(rinfo.address, now).allow) return;
+      const reply = discovery.buildReply(nonce, NODE_KEY);
+      if (!reply) return;
+      socket.send(reply, rinfo.port, rinfo.address, () => { /* a lost answer is just a lost UDP datagram */ });
+      const t = discoveryLogGap.check(rinfo.address, now);
+      if (t.allow) {
+        logs.append({
+          level: 'info',
+          device: 'relay',
+          msg: `a node at ${rinfo.address} asked where the relay is${t.suppressed > 0 ? ` (+${t.suppressed} more since)` : ''}`,
+        });
+      }
+    } catch (err) {
+      logsError(`discovery probe failed: ${errorMessage(err)}`); // never let a datagram stop the relay
+    }
+  });
+  socket.bind(discoveryCfg.port, () => console.log(`[relay] discovery listening on UDP :${discoveryCfg.port}`));
+}
+startDiscoveryResponder();
+
 // ── HTTP API for the PHP frontend ──
 // (the middleware and the key check above already cover every /api route;
 // the duplicated block that used to sit here was dead code — #36 tidy-up)
@@ -398,6 +462,7 @@ app.get('/api/config', (req, res) => {
     now: Date.now(),
     httpPort: PORT,
     nodePort: NODE_PORT,
+    discoveryPort: discoveryCfg.port,
     nodeKeySet: NODE_KEY.length > 0 && !NODE_KEY.startsWith('CHANGE-ME'),
     relayKeySet: RELAY_KEY.length > 0 && !RELAY_KEY.startsWith('CHANGE-ME'),
     firmware: firmware.currentFirmware(FIRMWARE_DIR),

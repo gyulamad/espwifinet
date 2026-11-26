@@ -8,7 +8,9 @@ development (the Home automation project).
 
 - **Relay** (`nodejs/esp-relay/`, Node.js on a Raspberry Pi): one raw TCP
   hub the nodes dial into (works behind WiFi extenders/NAT), one HTTP API
-  for the PHP frontend, OTA firmware serving, per-device remote logs.
+  for the PHP frontend, OTA firmware serving, per-device remote logs, and
+  a UDP discovery responder so a node can find the relay again when its
+  stored address stopped answering (task #160).
 - **Frontend** (`php/espdash/`, PHP): an initial setup page that writes
   config.php on first run, login, dashboard with the single On/Off toggle,
   Devices page with every node's connection status + SSID + signal
@@ -22,12 +24,16 @@ development (the Home automation project).
   (the WiFiMulti pattern), outbound relay connection with
   framed-JSON protocol, status reports (SSID, RSSI, heap, uptime), in-band
   remote logging with repeat suppression and a settings-driven level
-  filter, OTA self-update, settings-driven GPIO, and a cable-free first
+  filter, OTA self-update, settings-driven GPIO, auto relay discovery
+  (the node finds the relay again when the router gave it a new address,
+  task #160), and a cable-free first
   install: a node whose first WiFi connect has never happened opens
   its own `espnode-setup-xxxxxx` WiFi where a phone picks the networks; the
   flash store is the node's only credential list.
 - **Tests** (`./run_tests.sh`): Node unit + e2e (real relay, simulated
-  node) + C++ logic tests against stub Arduino headers.
+  node), a discovery e2e (the real relay answers UDP probes; the firmware's
+  real search code finds it over real sockets) + C++ logic tests against
+  stub Arduino headers.
 
 Design decisions worth knowing (each documented in the code):
 
@@ -42,6 +48,13 @@ Design decisions worth knowing (each documented in the code):
   every value the install needs; the relay's ports/keys stay in
   config.js on purpose — they need a restart, so the page shows them
   read-only instead.
+- When the relay's address changes (the router gave the Pi a new one),
+  the node notices its stored address stopped answering and asks the
+  network with a small UDP probe ("ESPNET1?" + a fresh nonce, UDP 8083).
+  Only a machine that knows the fleet key can answer correctly (an
+  HMAC, the key itself is never sent), and the node stores the address
+  that answered, then restarts into it — the same mechanism the camera
+  project (espcamsys2) ships. A healthy system never sends a packet.
 - The node carries NO config file at all: the sketch has nothing to
   edit — the WiFi list AND the relay address + fleet key live in its flash
   store, written by the node's own setup page, so a flashed binary plus one

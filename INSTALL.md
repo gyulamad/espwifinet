@@ -64,7 +64,12 @@ node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
 node server.js
 # -> [relay] node TCP server on :7777
 # -> [relay] http api on :8080
+# -> [relay] discovery listening on UDP :8083
 #    (health check: curl http://127.0.0.1:8080/healthz)
+#
+# discovery (UDP 8083) lets a node find the relay again when the router
+# gave the Pi a new address (task #160). If your firewall blocks it, open
+# it once:  sudo ufw allow 8083/udp   (discoveryPort: 0 in config.js = off)
 ```
 
 Then make it a service that survives reboots
@@ -238,6 +243,16 @@ never churned. The tuning knobs (`WIFI_WEAK_RSSI_DBM`, `WIFI_ROAM_MARGIN_DB`,
 The node needs no port forwarding: it dials the relay itself. Behind an
 extender/NAT router it behaves identically — if the link goes half-open,
 the node detects the silence and reconnects on its own.
+
+**If the relay's address changes** (the router gave the Pi a new one), the
+node does not stay lost: while its connection is down it asks the network
+"where is the relay?" with a small UDP probe (to the stored address, then
+a broadcast, then a sweep of the subnet — UDP 8083, the relay's
+`discoveryPort`). Only the real relay answers (it proves it knows the
+fleet's nodeKey without ever sending it), the node stores the address it
+answered from and restarts into it. Nothing to reconfigure by hand; the
+relay's log page shows each search. Set `discoveryPort: 0` in config.js to
+switch the responder off.
 
 **GPIO choice:** the dashboard's Settings page defines the pin the big
 On/Off toggle drives on every node. Default is GPIO 5 (D1 on NodeMCU/Wemos).

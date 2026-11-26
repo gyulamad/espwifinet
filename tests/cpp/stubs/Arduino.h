@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cstdarg>
 #include <algorithm>
+#include <map>
 
 #define HIGH 1
 #define LOW 0
@@ -118,7 +119,35 @@ enum WifiStatus { WL_DISCONNECTED = 6, WL_CONNECTED = 3 };
 
 class IPAddressStub {
  public:
-  String toString() const { return String("192.168.1.42"); }
+  IPAddressStub() {}
+  explicit IPAddressStub(const std::string& s) : s_(s) {}
+  String toString() const { return String(s_.c_str()); }
+  // The real core's IPAddress::fromString: strict dotted quad in, false for anything else
+  // (the discovery glue refuses to send to a malformed address, task #160).
+  bool fromString(const char* c) {
+    if (c == nullptr) return false;
+    const std::string s(c);
+    int part = 0;
+    size_t i = 0;
+    while (part < 4 && i < s.size()) {
+      unsigned v = 0;
+      size_t digits = 0;
+      while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+        v = v * 10 + (unsigned)(s[i] - '0');
+        if (++digits > 3 || v > 255) return false;
+        ++i;
+      }
+      if (digits == 0) return false;
+      if (++part < 4) {
+        if (i >= s.size() || s[i] != '.') return false;
+        ++i;
+      }
+    }
+    if (part != 4 || i != s.size()) return false;
+    s_ = s;
+    return true;
+  }
+  std::string s_ = "192.168.1.42";
 };
 using IPAddress = IPAddressStub;  // the real core's type name
 
@@ -132,11 +161,26 @@ class WiFiStub {
   long RSSI() { return connectedRssi; }
   String SSID(int i) { return (i >= 0 && i < scanCount) ? scanSsid[i] : String(""); }
   long RSSI(int i) { return (i >= 0 && i < scanCount) ? scanRssi[i] : 0; }
-  IPAddressStub localIP() { return IPAddressStub(); }
+  IPAddressStub localIP() { return IPAddressStub(ownIp); }
   int status() { return wifiStatus; }
   bool mode(int) { return true; }  // the real WiFiClass::mode answers bool (the setup glue checks it)
   void begin(const char* ssid, const char*) { lastBeginSsid = ssid ? ssid : ""; }
   void disconnect(bool = false) { wifiStatus = WL_DISCONNECTED; }
+
+  // ── DNS surface (task #160): what the discovery glue's resolve() drives ──
+  // Both cores answer nonzero on success (ESP32 int 1, ESP8266 bool true);
+  // the glue compares != 1. Tests steer it through the dns map / dnsFailAll.
+  bool hostByName(const char* name, IPAddress& out) {
+    lastHostLookup = name ? name : "";
+    if (dnsFailAll) return false;
+    std::map<std::string, std::string>::const_iterator it = dns.find(lastHostLookup);
+    if (it == dns.end()) return false;
+    out = IPAddress(it->second);
+    return true;
+  }
+  std::map<std::string, std::string> dns;
+  bool dnsFailAll = false;
+  std::string lastHostLookup;
 
   // ── AP surface (#135): what the setup glue (setup_ap.h) drives ──
   bool softAP(const char* ssid, const char* pass, int channel = 1, int hidden = 0, int maxStations = 4) {
@@ -185,6 +229,7 @@ class WiFiStub {
   String connectedSsid = String("TestNet");
   long connectedRssi = -58;
   int wifiStatus = WL_CONNECTED;
+  std::string ownIp = "192.168.1.42"; // the address localIP() reports (the discovery glue's sweep base)
 };
 // (the test build defines the global `WiFi` object itself)
 

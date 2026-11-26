@@ -14,6 +14,8 @@
 //     fixed from the phone that set it (no cable, no reflash),
 //   - keep one OUTBOUND connection to the relay (works behind WiFi
 //     extenders / NAT routers — see net.h),
+//   - find the relay again when its stored address stopped answering —
+//     the router gave the Pi a new one (relay_find.h, task #160),
 //   - report status (SSID, signal strength, heap, uptime, gpio) so the
 //     dashboard shows every board's connection state,
 //   - drive the settings-defined GPIO leg from the dashboard's single
@@ -22,7 +24,8 @@
 //     (ota.h).
 //
 // Files: board.h, wifi_store.h, wifi_store_hw.h, setup_logic.h,
-// setup_ap.h, wifi.h, net.h, ota.h, remote_log.h. There is NO config file
+// setup_ap.h, wifi.h, net.h, ota.h, remote_log.h, relay_find.h,
+// relay_find_logic.h. There is NO config file
 // (task #140): the WiFi list AND the relay address + fleet key live in the
 // node's flash, written by its own setup page — a flashed binary plus one
 // phone visit is a complete install, and the end user never touches source.
@@ -37,6 +40,18 @@
 #include "net.h"
 #include "ota.h"
 #include "remote_log.h"
+
+// the node log is declared before everything that may report into it — the
+// discovery macros below expand inside relay_find.h's own member functions
+static espnet::RemoteLog nodeLog;
+
+// discovery (task #160): report the search through the node log instead of
+// the serial port — the entries are queued while the relay is unreachable
+// and reach the relay's log page once the connection is back.
+#define RELAY_FIND_INFO(...) nodeLog.logf(espnet::LOG_INFO, __VA_ARGS__)
+#define RELAY_FIND_WARN(...) nodeLog.logf(espnet::LOG_WARN, __VA_ARGS__)
+#include "relay_find.h"
+
 #include "setup_ap.h"
 #include "setup_logic.h"
 #include "wifi.h"
@@ -83,6 +98,27 @@
 #ifndef SETUP_RETRY_WINDOW_MS
 #define SETUP_RETRY_WINDOW_MS 60000  // pause between windows while joins keep failing
 #endif
+// ── auto relay discovery (task #160) ──
+// When the relay is not reachable at the stored address (the router gave the
+// Pi a new one), the node searches for it the way espcamsys2's cameras do: a
+// UDP probe the relay answers only if it knows the fleet key. The UDP port
+// is ESPNET_DISCOVERY_PORT (relay_find.h; must equal the relay's
+// discoveryPort, default 8083). These four knobs space the searches out: the
+// first one 10 s after the search arms, then one every 60 s while the relay
+// answers where it was, and after a failed search a retry after 15 s,
+// doubling up to 5 min (a sweep is not free).
+#ifndef ESPNET_FIND_FIRST_S
+#define ESPNET_FIND_FIRST_S 10
+#endif
+#ifndef ESPNET_FIND_OK_S
+#define ESPNET_FIND_OK_S 60
+#endif
+#ifndef ESPNET_FIND_RETRY_MIN_S
+#define ESPNET_FIND_RETRY_MIN_S 15
+#endif
+#ifndef ESPNET_FIND_RETRY_MAX_S
+#define ESPNET_FIND_RETRY_MAX_S 300
+#endif
 
 // ── credentials: the flash store is the ONLY source (task #135 v2) ──
 // config.h carries no WiFi list anymore: the networks picked on the setup
@@ -126,10 +162,22 @@ static const char* DEVICE = nullptr; // filled in setup()
 static const char* FW = FW_VERSION;
 
 // ── runtime state ──
-static espnet::RemoteLog nodeLog;
 static espnet::RelayConnection relay;
 static espnet::OtaUpdater ota;
 static espnet::WifiMulti wifiMulti;
+
+// ── auto relay discovery (task #160) ──
+// Owns nothing at construction: the search only runs when tick() is called
+// from loop() with the relay connection down, and the timings come from the
+// build defaults above. A found address is stored into the flash relay
+// configuration (host only; port and key ride along) and the sketch
+// restarts so the connection and the OTA client both pick it up.
+static RelayFind relayFind(relayConfigStore, relayCfg,
+                           ESPNET_DISCOVERY_PORT,
+                           ESPNET_FIND_FIRST_S * 1000UL,
+                           ESPNET_FIND_OK_S * 1000UL,
+                           ESPNET_FIND_RETRY_MIN_S * 1000UL,
+                           ESPNET_FIND_RETRY_MAX_S * 1000UL);
 
 static long gpioPin = DEFAULT_GPIO_PIN;      // overridden by relay settings
 static bool gpioActiveHigh = DEFAULT_ACTIVE_HIGH;
@@ -371,6 +419,19 @@ void loop() {
         relay.reset();
       }
       maybeSendStatus();
+    } else if (relayConfigured) {
+      // #160: the relay is not answering at the stored address (the router
+      // gave the Pi a new one). The search runs on its own schedule — nothing
+      // while the connection works, then a probe to the stored address, a
+      // broadcast, a sweep of the subnet — and when the relay proves it knows
+      // the fleet key from ANOTHER address, the new host is stored in flash
+      // and the node restarts into it. A healthy system never sends a packet.
+      if (relayFind.tick(relayCfg.host.c_str(), relayCfg.key.c_str(), true)) {
+        nodeLog.logf(espnet::LOG_WARN, "relay moved - restarting to use %s", relayCfg.host.c_str());
+        Serial.flush();  // let the line out before the reset
+        ESP.restart();
+        return;
+      }
     }
     ota.tick(FW);
   }

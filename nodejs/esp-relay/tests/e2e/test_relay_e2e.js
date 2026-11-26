@@ -38,6 +38,7 @@ function startRelay() {
       LOG_DIR: path.join(tmpDir, 'logs'),
       FIRMWARE_DIR: path.join(tmpDir, 'firmware'),
       OFFLINE_AFTER_MS: '1500',
+      DISCOVERY_PORT: '0', // task #160's responder has its own e2e (test_discovery_e2e.js)
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

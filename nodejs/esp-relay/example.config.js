@@ -9,6 +9,12 @@ module.exports = {
   port: 8080,
   // Raw TCP port the ESP nodes connect to.
   nodePort: 7777,
+  // UDP port the discovery responder answers on (task #160): a node whose
+  // stored relay address stopped answering asks the network "where is the
+  // relay?" and stores the address that proves it knows nodeKey. 0 = off.
+  // Must equal the sketch's ESPNET_DISCOVERY_PORT (default 8083), and the
+  // Pi's firewall has to let UDP in on this port.
+  discoveryPort: 8083,
   // Shared secret the PHP frontend must send as X-API-Key on every /api call.
   // Generate one: node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
   relayKey: 'CHANGE-ME-relay-key',
