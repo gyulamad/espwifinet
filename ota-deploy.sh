@@ -106,6 +106,7 @@ for chip in $CHIPS; do
     esp32)   FQBN="$FQBN_ESP32" ;;
   esac
   say "== Compiling $chip ($FQBN)"
+  [ "$chip" = esp8266 ] && say "   NOTE: ONE esp8266 image serves EVERY esp8266 node, built for this flash layout; a node whose chip is smaller refuses it (INSTALL.md section 5, 'Flash sizes')"
   arduino-cli compile --fqbn "$FQBN" --output-dir "$TMP/$chip" arduino/ESP_node || die "compiling for $chip failed"
   bin="$TMP/$chip/ESP_node.ino.bin"
   [ -f "$bin" ] || die "the build did not produce ESP_node.ino.bin for $chip (looked in $TMP/$chip)"

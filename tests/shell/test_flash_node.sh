@@ -32,6 +32,17 @@
 #   scenario 14: the same with the v4+/esp32 wording;
 #   scenario 15: fatal once, then a clean upload -> retried and flashed;
 #   scenario 16: arduino-cli's own non-zero exit -> dies at once, no retry.
+#   flash layout follows the chip (follow-up of #173/#174): a 1MB chip cannot hold the
+#   4MB NodeMCU layout's settings sector, every setup-page save failed:
+#   scenario 17: 1MB chip (esptool v5) -> built as generic:eesz=1M, both the
+#                compile and the upload ride it;
+#   scenario 18: 2MB chip on a py-only v3 install -> eesz=2M, `esptool.py ... flash_id`;
+#   scenario 19: 4MB chip -> the NodeMCU default stays;
+#   scenario 20: no esptool -> default layout WITH a warning naming the override;
+#   scenario 21: unreadable / unknown size -> default layout with a warning;
+#   scenario 22: FQBN_ESP8266 set by the caller wins, the chip is never asked;
+#   scenario 23: --board esp32 never asks esptool for a flash size;
+#   scenario 24: UPLOAD_ATTEMPTS overrides the default of 5.
 
 set -u
 
@@ -102,6 +113,11 @@ cat > "$tmp/bin-modern/esptool" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = version ]; then printf '%s\n' "${STUB_ESPTOOL_VERSION:-}"; exit 0; fi
 echo "$(basename "$0") $*" >> "$STUB_LOG"
+case "${3:-}" in
+  flash-id|flash_id)
+    [ -n "${STUB_FLASH_SIZE:-}" ] && printf 'Manufacturer: 68\nDevice: 4014\nDetected flash size: %s\n' "$STUB_FLASH_SIZE"
+    exit 0 ;;
+esac
 STUB
 chmod +x "$tmp/bin-modern/esptool"
 cp "$tmp/bin-modern/esptool" "$tmp/bin-modern/esptool.py"
@@ -119,7 +135,7 @@ run_flash() { # <board-list-fixture|-> [extra args...]
   : > "$tmp/stub.log"; rm -f "$tmp/upload.count"
   STUB_BOARD_LIST="$fixture" STUB_LOG="$tmp/stub.log" STUB_CORE_LIST="${STUB_CORE_LIST:-}" \
     STUB_COUNT="$tmp/upload.count" UPLOAD_RETRY_DELAY=0 \
-    PATH="${STUB_BIN_PATH:-$tmp/bin:$PATH}" bash "$tmp/node/flash-node.sh" "$@" > "$tmp/out.txt" 2> "$tmp/err.txt"
+    PATH="${STUB_BIN_PATH:-$HERMETIC_BASE}" bash "$tmp/node/flash-node.sh" "$@" > "$tmp/out.txt" 2> "$tmp/err.txt"
 }
 
 # ── scenario 1: the tester's exact Unknown-type table (tabs) ──
@@ -213,7 +229,7 @@ fi
 # ── scenarios 8-12: --erase picks the tool and command spelling (task #173) ──
 erase_case() { # <label> <bin-dir> <version line> <expected first stub-log line>
   local label="$1" bindir="$2" ver="$3" want="$4" first
-  STUB_BIN_PATH="$bindir:$HERMETIC_BASE" STUB_ESPTOOL_VERSION="$ver" \
+  FQBN_ESP8266=esp8266:esp8266:nodemcuv2 STUB_BIN_PATH="$bindir:$HERMETIC_BASE" STUB_ESPTOOL_VERSION="$ver" \
     run_flash unknown-tabs --port /dev/null --erase
   rc=$?
   first="$(sed -n 1p "$tmp/stub.log")"
@@ -267,10 +283,97 @@ upload_case() { # <label> <STUB_UPLOAD> <expected rc> <expected upload count> <m
     fail=1
   fi
 }
-upload_case "swallowed esptool fatal (esp8266 wording) on every attempt" fatal-esp8266 1 3 'upload did NOT stick'
-upload_case "swallowed esptool fatal (esp32 wording) on every attempt" fatal-esp32 1 3 'upload did NOT stick' --board esp32
+upload_case "swallowed esptool fatal (esp8266 wording) on every attempt" fatal-esp8266 1 5 'upload did NOT stick'
+upload_case "swallowed esptool fatal (esp32 wording) on every attempt" fatal-esp32 1 5 'upload did NOT stick' --board esp32
 upload_case "fatal once, then a clean upload: retried and flashed" fatal-once 0 2 'retrying'
 upload_case "arduino-cli's own failure: dies at once, no retry" fail 1 1 'upload failed'
+
+# ── scenarios 17-23: the flash layout follows the chip (follow-up of #173/#174) ──
+layout_case() { # <label> <bin-dir> <version> <flash size> <expected fqbn> <expected flash-id call|-> [extra args...]
+  local label="$1" bindir="$2" ver="$3" size="$4" want="$5" idcall="$6"; shift 6
+  STUB_BIN_PATH="$bindir:$HERMETIC_BASE" STUB_ESPTOOL_VERSION="$ver" STUB_FLASH_SIZE="$size" \
+    run_flash unknown-tabs --port /dev/null "$@"
+  rc=$?
+  local ok=1
+  [ "$rc" -eq 0 ] || ok=0
+  grep -q "^compile --fqbn $want --output-dir" "$tmp/stub.log" || ok=0
+  grep -q "^upload --fqbn $want -p /dev/null" "$tmp/stub.log" || ok=0
+  if [ "$idcall" != "-" ]; then grep -qx "$idcall" "$tmp/stub.log" || ok=0; fi
+  if [ "$ok" -eq 1 ]; then
+    echo "[PASS] $label: built as $want"
+  else
+    echo "[FAIL] $label: exit $rc, expected $want (flash-id call: $idcall); stub log:"
+    cat "$tmp/stub.log"; cat "$tmp/out.txt" "$tmp/err.txt"
+    fail=1
+  fi
+}
+layout_case "1MB chip, esptool v5" "$tmp/bin-modern" "esptool v5.4.0" 1MB \
+  "esp8266:esp8266:generic:eesz=1M" "esptool --port /dev/null flash-id"
+layout_case "2MB chip, py-only v3" "$tmp/bin-py" "esptool.py v3.0" 2MB \
+  "esp8266:esp8266:generic:eesz=2M" "esptool.py --port /dev/null flash_id"
+layout_case "4MB chip keeps the NodeMCU default" "$tmp/bin-modern" "esptool v5.4.0" 4MB \
+  "esp8266:esp8266:nodemcuv2" "esptool --port /dev/null flash-id"
+
+STUB_BIN_PATH="$HERMETIC_BASE" run_flash unknown-tabs --port /dev/null
+rc=$?
+out="$(cat "$tmp/out.txt" "$tmp/err.txt")"
+if [ "$rc" -eq 0 ] && grep -q '^compile --fqbn esp8266:esp8266:nodemcuv2 ' "$tmp/stub.log" \
+   && printf '%s' "$out" | grep -q 'could not read the chip.s flash size' \
+   && printf '%s' "$out" | grep -q 'FQBN_ESP8266=esp8266:esp8266:generic:eesz=1M'; then
+  echo "[PASS] no esptool: default layout, with the warning that names the 1MB override"
+else
+  echo "[FAIL] no esptool: exit $rc; output:"; printf '%s\n' "$out"; cat "$tmp/stub.log"
+  fail=1
+fi
+
+STUB_BIN_PATH="$tmp/bin-modern:$HERMETIC_BASE" STUB_ESPTOOL_VERSION="esptool v5.4.0" STUB_FLASH_SIZE="" \
+  run_flash unknown-tabs --port /dev/null
+rc=$?
+out="$(cat "$tmp/out.txt" "$tmp/err.txt")"
+if [ "$rc" -eq 0 ] && grep -q '^compile --fqbn esp8266:esp8266:nodemcuv2 ' "$tmp/stub.log" \
+   && printf '%s' "$out" | grep -q 'could not read the chip.s flash size'; then
+  echo "[PASS] unreadable flash size: default layout with the warning"
+else
+  echo "[FAIL] unreadable flash size: exit $rc; output:"; printf '%s\n' "$out"; cat "$tmp/stub.log"
+  fail=1
+fi
+STUB_BIN_PATH="$tmp/bin-modern:$HERMETIC_BASE" STUB_ESPTOOL_VERSION="esptool v5.4.0" STUB_FLASH_SIZE="3MB" \
+  run_flash unknown-tabs --port /dev/null
+rc=$?
+out="$(cat "$tmp/out.txt" "$tmp/err.txt")"
+if [ "$rc" -eq 0 ] && grep -q '^compile --fqbn esp8266:esp8266:nodemcuv2 ' "$tmp/stub.log" \
+   && printf '%s' "$out" | grep -q "flash size '3MB' is not one this script knows"; then
+  echo "[PASS] unknown flash size: default layout with the warning"
+else
+  echo "[FAIL] unknown flash size: exit $rc; output:"; printf '%s\n' "$out"; cat "$tmp/stub.log"
+  fail=1
+fi
+
+FQBN_ESP8266="esp8266:esp8266:d1_mini" STUB_BIN_PATH="$tmp/bin-modern:$HERMETIC_BASE" \
+  STUB_ESPTOOL_VERSION="esptool v5.4.0" STUB_FLASH_SIZE="1MB" \
+  run_flash unknown-tabs --port /dev/null
+rc=$?
+if [ "$rc" -eq 0 ] && grep -q '^compile --fqbn esp8266:esp8266:d1_mini ' "$tmp/stub.log" \
+   && ! grep -q 'flash.id' "$tmp/stub.log"; then
+  echo "[PASS] FQBN_ESP8266 set by the caller wins: the chip is never asked"
+else
+  echo "[FAIL] explicit FQBN: exit $rc; stub log:"; cat "$tmp/stub.log"
+  fail=1
+fi
+
+STUB_BIN_PATH="$tmp/bin-modern:$HERMETIC_BASE" STUB_ESPTOOL_VERSION="esptool v5.4.0" STUB_FLASH_SIZE="1MB" \
+  run_flash unknown-tabs --port /dev/null --board esp32
+rc=$?
+if [ "$rc" -eq 0 ] && grep -q '^compile --fqbn esp32:esp32:esp32 ' "$tmp/stub.log" \
+   && ! grep -q '^esptool' "$tmp/stub.log"; then
+  echo "[PASS] --board esp32: esptool is never asked for a flash size"
+else
+  echo "[FAIL] esp32 layout: exit $rc; stub log:"; cat "$tmp/stub.log"
+  fail=1
+fi
+
+# ── scenario 24: UPLOAD_ATTEMPTS overrides the default of 5 ──
+UPLOAD_ATTEMPTS=2 upload_case "UPLOAD_ATTEMPTS=2 caps the retries" fatal-esp8266 1 2 'upload did NOT stick'
 
 if [ "$fail" -eq 0 ]; then
   echo "flash-node.sh port detection: ALL PASSED"

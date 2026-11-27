@@ -174,6 +174,17 @@ by `./flash-node.sh`** (task #159): `./flash-node.sh [--board esp32]
 [--port /dev/ttyUSB0] [--erase]` compiles the sketch with arduino-cli and
 uploads it, then prints what to do next. The section below is what it does.
 
+**Flash size.** The default ESP8266 build (NodeMCU 1.0) assumes a 4MB chip and
+keeps the node's settings sector 4MB into the flash. Many clone modules carry
+**1MB or 2MB** — on those the setup page's save fails with "the flash write did
+not persist". `flash-node.sh` reads the chip (`esptool flash-id`, so it needs
+`pip install esptool`) and builds the matching layout of the core's *generic*
+board for you (1MB → `esp8266:esp8266:generic:eesz=1M`); 4MB and bigger keep the
+NodeMCU default. Set `FQBN_ESP8266` yourself to override. By hand, check the
+chip with `esptool --port /dev/ttyUSB0 flash-id` (esptool v3 or older:
+`esptool.py … flash_id`) and pick the matching "Flash Size" in the IDE's
+Tools menu with the *Generic ESP8266 Module* board.
+
 In the Arduino IDE (or arduino-cli):
 
 1. Install the **core for your board** (Boards Manager URL:
@@ -395,6 +406,16 @@ from the first release on.
    Bump `FW_VERSION` (the sketch's inline default) before compiling a new
    release.
 2. Dashboard → Firmware → set the version, upload the `.bin`.
+
+   **Flash sizes.** The relay keeps ONE image per chip type (`esp8266`,
+   `esp32`), and an ESP8266 node refuses an update whose image was built for a
+   larger flash than its chip has (the core's updater: "new Flash config
+   wasn't fit"; the node keeps running its current firmware). So the esp8266
+   image you publish must be built for the layout of the nodes that should
+   take it: `FQBN_ESP8266` in `ota.conf` (e.g. `esp8266:esp8266:generic:eesz=1M`
+   for a 1MB fleet). **A fleet that mixes 1MB and 4MB ESP8266 chips is not
+   served by one image yet** — flash such nodes by cable (`flash-node.sh`
+   picks each chip's layout) and keep OTA to nodes of one flash size.
 3. Nodes check the relay once a minute; when the served version differs
    from theirs they download, flash, log every step and reboot. Watch the
    Devices page's Firmware column (and the Logs page) as the fleet updates.
@@ -426,7 +447,7 @@ from the first release on.
 | Node joined nothing after a save | wrong password or hidden network. After a save the node goes straight to joining the saved network(s); if it has not connected once after about a minute it opens its setup WiFi again for a minute at a time, so rejoin `espnode-setup-…` from your phone and fix the row (a blank password field keeps the stored one). Once a node has connected successfully it no longer does this: arm SETUP_MODE on the dashboard and power-cycle it instead. The save disarms the node again. To start over completely, erase the flash (section 3, "Start a node over (erase the flash)"). |
 | The serial log says reset reason `Brownout`, or the node restarts when its WiFi starts | the board's power is too weak for the radio: use a short, good USB cable and a port or charger that can deliver at least 500 mA (not an unpowered hub or a thin cable), and avoid powering it from a pin header with a long wire. No setting in the firmware can compensate for it. |
 | The setup page hangs after "Save and restart" | open the Serial Monitor (115200) BEFORE pressing save and watch the `[setup]` lines: `connection accepted` → `POST /save` → `save: both flash stores written` → `reply 200 sent` → `setup: saved - restarting now`. The last line that appears is where it stopped. After the restart the first `boot:` lines print the reset reason: `Exception`, `Hardware Watchdog` or `Software Watchdog` (instead of a software restart) means the node crashed during the save. While the setup WiFi is up an `alive:` line prints every few seconds (phones joined, open connections, free heap, lowest free stack). Passwords and keys are never printed. |
-| The save answers "Could not write … to flash (…)" | the reason in parentheses names the failing stage and the serial monitor carries the same `[setup]` line. On an ESP32, "the flash write did not persist" with every save failing has been the ESP32 core version: the node's EEPROM space is one 4096-byte NVS blob and cores older than arduino-esp32 2.0.0 cap NVS blobs at 1984 bytes — `flash-node.sh` refuses that build; upgrade the core (`arduino-cli core update-index && arduino-cli core install esp32:esp32`) and flash again. The ESP8266 stores the blob in a real flash sector and has no such limit. |
+| The save answers "Could not write … to flash (…)" | the reason in parentheses names the failing stage and the serial monitor carries the same `[setup]` line. On an ESP32, "the flash write did not persist" with every save failing has been the ESP32 core version: the node's EEPROM space is one 4096-byte NVS blob and cores older than arduino-esp32 2.0.0 cap NVS blobs at 1984 bytes — `flash-node.sh` refuses that build; upgrade the core (`arduino-cli core update-index && arduino-cli core install esp32:esp32`) and flash again. The ESP8266 stores the blob in a real flash sector and has no such limit — but on an ESP8266 with a **1MB or 2MB chip flashed with the 4MB NodeMCU layout** every save fails the same way (the settings sector lies beyond the chip): check `esptool --port /dev/ttyUSB0 flash-id` and re-flash with `./flash-node.sh` (it builds the chip's own layout; section 3, "Flash size"). |
 | `cp config.example.php config.php` says "Permission denied" | the `espdash` folder belongs to the web server user, so your own login cannot write there — run the manual copy through sudo as shown in section 2 (or use the setup page, which writes the file as the web server user). |
 
 ## 8. Running the tests

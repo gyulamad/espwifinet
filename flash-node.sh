@@ -29,6 +29,17 @@
 # (erase-flash from v4 on, erase_flash for v3 / unknown), so no deprecation
 # warning is printed (task #173).
 #
+# The flash LAYOUT follows the chip (follow-up of #173/#174): the
+# default NodeMCU build assumes a 4MB chip and keeps the node's settings
+# sector 4MB into the flash. A 1MB or 2MB chip has no such sector, so every
+# setup-page save fails ("the flash write did not persist") - the tester's
+# 1MB board did exactly that. For esp8266 the script therefore reads the
+# chip's flash size (`esptool flash-id`) and builds the matching layout of the
+# esp8266 core's generic board (1MB -> esp8266:esp8266:generic:eesz=1M); 4MB
+# and bigger keep the NodeMCU default. Needs esptool on the PATH (pip install
+# esptool); without it the default is used with a warning. An FQBN_ESP8266
+# you set yourself always wins and skips the detection.
+#
 # The upload is VERIFIED (task #174): the esp8266 core's upload wrapper prints
 # esptool's fatal error and still exits 0, so the toolchain output is scanned
 # for it. A failed write is retried (the first upload right after an erase is
@@ -37,7 +48,7 @@
 #
 # Settings (environment variables):
 #   FQBN_ESP8266 / FQBN_ESP32   override the board identifiers
-#   UPLOAD_ATTEMPTS             upload tries before giving up (default 3)
+#   UPLOAD_ATTEMPTS             upload tries before giving up (default 5)
 #   UPLOAD_RETRY_DELAY          seconds between tries (default 2)
 #
 # Exit code: 0 flashed, 1 failed, 2 wrong usage.
@@ -45,10 +56,12 @@ set -u
 
 cd "$(dirname "$0")" || exit 1
 
+FQBN_ESP8266_EXPLICIT="${FQBN_ESP8266:+1}"   # set by the caller: skip the flash-size detection
 FQBN_ESP8266="${FQBN_ESP8266:-esp8266:esp8266:nodemcuv2}"
+FQBN_ESP8266_GENERIC="esp8266:esp8266:generic"   # the board whose menu has the 1MB/2MB layouts
 FQBN_ESP32="${FQBN_ESP32:-esp32:esp32:esp32}"
 BUILD_DIR="./build"
-UPLOAD_ATTEMPTS="${UPLOAD_ATTEMPTS:-3}"
+UPLOAD_ATTEMPTS="${UPLOAD_ATTEMPTS:-5}"
 UPLOAD_RETRY_DELAY="${UPLOAD_RETRY_DELAY:-2}"
 # esptool's own fatal line: 'A fatal esptool.py error occurred' (esptool 3.x,
 # the esp8266 core's bundled one) / 'A fatal error occurred' (v4+, esp32 path)
@@ -107,20 +120,7 @@ if [ "$BOARD" = esp32 ]; then
   esac
 fi
 
-# ── the port ─────────────────────────────────────────────────────────────
-if [ -z "$PORT" ]; then
-  say "no --port given: looking for a board with arduino-cli board list"
-  # task #165: cut the port out by its own /dev/... token instead of parsing
-  # columns — board list renders tab-separated in one version and space-
-  # aligned in another, and the plugged-in NodeMCU's row reads "Unknown" with
-  # no FQBN at all (which the column parse treated as no board at all).
-  PORT="$(arduino-cli board list 2>/dev/null | grep -oE '/dev/(ttyUSB|ttyACM|cu\.usb)[0-9A-Za-z._-]*' | head -n 1)"
-  [ -n "$PORT" ] || die "no USB serial port in arduino-cli board list - plug the node in, or pass --port /dev/ttyUSB0 (Windows: COM3-style)"
-fi
-[ -e "$PORT" ] || die "serial port $PORT does not exist (arduino-cli board list shows the ports)"
-say "board: $BOARD ($FQBN), port: $PORT"
-
-# ── optional factory reset ───────────────────────────────────────────────
+# ── esptool helpers (tasks #173, #174 follow-up) ───────────────────────────────────
 # the modern binary name first (esptool.py is deprecated since v5; every pip
 # install ships both entry points), the old one as the fallback
 find_esptool() {
@@ -135,21 +135,78 @@ esptool_major() {
   "$1" version 2>/dev/null | head -n 1 | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\..*/\1/p'
 }
 
-# v4+ spells the command erase-flash (the underscore form only warns there);
-# v3 and an unreadable version keep erase_flash, which every version accepts
-erase_command() {
-  local major
-  major="$(esptool_major "$1")"
+# v4+ spells its commands with dashes (the underscore form only warns there);
+# v3 and an unreadable version keep the underscore spelling, which every
+# version accepts. usage: esptool_command <tool> erase flash -> erase-flash
+esptool_command() {
+  local tool="$1" major; shift
+  major="$(esptool_major "$tool")"
   case "$major" in
-    ''|*[!0-9]*) echo erase_flash; return ;;
+    ''|*[!0-9]*) ( IFS=_; echo "$*" ); return ;;
   esac
-  [ "$major" -ge 4 ] || { echo erase_flash; return; }
-  echo erase-flash
+  [ "$major" -ge 4 ] || { ( IFS=_; echo "$*" ); return; }
+  ( IFS=-; echo "$*" )
 }
 
+# the chip's flash size as esptool words ("1MB"), empty when unreadable
+detect_flash_size() { # <port>
+  local tool cmd
+  tool="$(find_esptool)" || return 1
+  cmd="$(esptool_command "$tool" flash id)"
+  "$tool" --port "$1" "$cmd" 2>&1 | sed -n 's/^Detected flash size: *//p' | head -n 1 | tr -d '\r '
+}
+
+# esptool's size words -> the esp8266 core's eesz menu value (generic board)
+flash_eesz() {
+  case "$1" in
+    512KB) echo 512K ;;
+    1MB)   echo 1M ;;
+    2MB)   echo 2M ;;
+    *)     return 1 ;;
+  esac
+}
+
+# ── the esp8266 flash layout follows the chip (follow-up of #173/#174) ─────────────────
+select_esp8266_layout() {
+  local size eesz
+  size="$(detect_flash_size "$PORT")"
+  if [ -z "$size" ]; then
+    say "WARNING: could not read the chip's flash size (esptool missing? pip install esptool) -"
+    say "building the default 4MB NodeMCU layout. A 1MB/2MB chip cannot save the setup page"
+    say "with it; if the save fails, re-run with FQBN_ESP8266=$FQBN_ESP8266_GENERIC:eesz=1M"
+    return 0
+  fi
+  case "$size" in
+    4MB|8MB|16MB) say "flash: $size - the default layout fits"; return 0 ;;
+  esac
+  eesz="$(flash_eesz "$size")" || {
+    say "WARNING: flash size '$size' is not one this script knows - building the default layout"
+    return 0
+  }
+  FQBN="$FQBN_ESP8266_GENERIC:eesz=$eesz"
+  say "flash: $size chip - building its own layout ($FQBN) so the settings sector lies inside the chip"
+}
+
+# ── the port ─────────────────────────────────────────────────────────────
+if [ -z "$PORT" ]; then
+  say "no --port given: looking for a board with arduino-cli board list"
+  # task #165: cut the port out by its own /dev/... token instead of parsing
+  # columns — board list renders tab-separated in one version and space-
+  # aligned in another, and the plugged-in NodeMCU's row reads "Unknown" with
+  # no FQBN at all (which the column parse treated as no board at all).
+  PORT="$(arduino-cli board list 2>/dev/null | grep -oE '/dev/(ttyUSB|ttyACM|cu\.usb)[0-9A-Za-z._-]*' | head -n 1)"
+  [ -n "$PORT" ] || die "no USB serial port in arduino-cli board list - plug the node in, or pass --port /dev/ttyUSB0 (Windows: COM3-style)"
+fi
+[ -e "$PORT" ] || die "serial port $PORT does not exist (arduino-cli board list shows the ports)"
+if [ "$BOARD" = esp8266 ] && [ -z "$FQBN_ESP8266_EXPLICIT" ]; then
+  select_esp8266_layout
+fi
+say "board: $BOARD ($FQBN), port: $PORT"
+
+# ── optional factory reset ───────────────────────────────────────────────
 if [ "$ERASE" = 1 ]; then
   ESPTOOL="$(find_esptool)" || die "--erase needs esptool (pip install esptool)"
-  ERASE_CMD="$(erase_command "$ESPTOOL")"
+  ERASE_CMD="$(esptool_command "$ESPTOOL" erase flash)"
   say "ERASING the flash on $PORT - the node forgets its WiFi list, relay address +"
   say "fleet key and both life-cycle flags; the dashboard's history for the device stays"
   "$ESPTOOL" --port "$PORT" "$ERASE_CMD" || die "$ERASE_CMD failed"
