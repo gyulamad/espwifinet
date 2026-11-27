@@ -91,6 +91,33 @@ class RegionScratch {
   size_t size_;
 };
 
+// Why a save refused to write (task #171): the setup page's failure answer
+// and the serial narration name the exact cause, so a stuck install can be
+// diagnosed from the serial monitor (or even from the phone's error page)
+// instead of presenting four possible causes as one. Optional out-parameter:
+// the plain two-argument save() keeps working for every existing caller.
+enum class StoreWriteError {
+  None,        // the save succeeded
+  NoBackend,   // begin(&backend) never ran
+  BadInput,    // validation refused a row / the configuration before any write
+  NoMemory,    // the heap scratch buffer could not be allocated
+  NoSpace,     // the serialized content does not fit the store's region
+  WriteFailed  // the backend's write did not persist (the flash refused)
+};
+
+// One short human-readable clause per cause, for log lines and the page.
+inline const char* storeWriteErrorText(StoreWriteError why) {
+  switch (why) {
+    case StoreWriteError::NoBackend: return "no flash backend was started";
+    case StoreWriteError::BadInput: return "a value did not pass validation";
+    case StoreWriteError::NoMemory: return "the heap scratch buffer could not be allocated";
+    case StoreWriteError::NoSpace: return "the content does not fit the store's region";
+    case StoreWriteError::WriteFailed: return "the flash write did not persist";
+    case StoreWriteError::None: break;
+  }
+  return "no error";
+}
+
 // One stored WiFi network. pass == "" means an open network (the node joins
 // it without a password); the setup form marks such rows explicitly.
 struct WifiStoreNet {
@@ -180,9 +207,12 @@ class WifiStore {
   // flag clears itself (the re-entry request is served), and the
   // provisioned flag is left alone (it flips when the node first CONNECTS,
   // not when the form saves). false = nothing was written (the caller stays
-  // in setup: a half-written store must never exist).
-  bool save(const WifiStoreNet* nets, int count) {
-    const bool ok = writeBlob(nets, count, provisioned_, false);
+  // in setup: a half-written store must never exist). `why` (optional)
+  // receives the exact cause (task #171).
+  bool save(const WifiStoreNet* nets, int count, StoreWriteError* why = nullptr) {
+    StoreWriteError cause = StoreWriteError::None;
+    const bool ok = writeBlob(nets, count, provisioned_, false, &cause);
+    if (why != nullptr) *why = ok ? StoreWriteError::None : cause;  // always: a stale cause must never survive into a success
     if (ok) armed_ = false; // a save IS the disarm event (the setup form's save)
     return ok;
   }
@@ -224,26 +254,29 @@ class WifiStore {
       // rewrite the header — the entries themselves are preserved.
       for (size_t i = len; i > 0; --i) buf[6 + i] = buf[5 + i];
     }
-    return writeHeader(buf, len, provisioned_, armed_);
+    return writeHeader(buf, len, provisioned_, armed_, nullptr);
   }
 
-  bool writeBlob(const WifiStoreNet* nets, int count, bool provisioned, bool armed) {
-    if (backend_ == nullptr) return false;
-    if (nets == nullptr && count != 0) return false;
+  bool writeBlob(const WifiStoreNet* nets, int count, bool provisioned, bool armed, StoreWriteError* why) {
+    if (backend_ == nullptr) { if (why) *why = StoreWriteError::NoBackend; return false; }
+    if (nets == nullptr && count != 0) { if (why) *why = StoreWriteError::BadInput; return false; }
     for (int i = 0; i < count; ++i) {
-      if (!validStoreSsid(nets[i].ssid) || !validStorePass(nets[i].pass)) return false;
+      if (!validStoreSsid(nets[i].ssid) || !validStorePass(nets[i].pass)) {
+        if (why) *why = StoreWriteError::BadInput;
+        return false;
+      }
     }
     RegionScratch scratch(WIFI_STORE_REGION_MAX);
-    if (!scratch.ok()) return false;
+    if (!scratch.ok()) { if (why) *why = StoreWriteError::NoMemory; return false; }
     char* buf = scratch.data();
     const int len = wifiStoreSerialize(nets, count, buf + 7, scratch.size() - 7);
-    if (len < 0) return false;
-    return writeHeader(buf, static_cast<size_t>(len), provisioned, armed);
+    if (len < 0) { if (why) *why = StoreWriteError::NoSpace; return false; }
+    return writeHeader(buf, static_cast<size_t>(len), provisioned, armed, why);
   }
 
   // Builds the v2 header ("ENW2" | flags | len BE16) in buf[0..6] and writes
   // the 7 + len bytes.
-  bool writeHeader(char* buf, size_t len, bool provisioned, bool armed) {
+  bool writeHeader(char* buf, size_t len, bool provisioned, bool armed, StoreWriteError* why) {
     buf[0] = 'E';
     buf[1] = 'N';
     buf[2] = 'W';
@@ -251,7 +284,8 @@ class WifiStore {
     buf[4] = static_cast<char>((provisioned ? 0x01 : 0x00) | (armed ? 0x02 : 0x00));
     buf[5] = static_cast<char>((len >> 8) & 0xff);
     buf[6] = static_cast<char>(len & 0xff);
-    return backend_->write(buf, len + 7);
+    if (!backend_->write(buf, len + 7)) { if (why) *why = StoreWriteError::WriteFailed; return false; }
+    return true;
   }
 
   static bool wifiStoreIsV2(const char* buf) {
@@ -378,20 +412,24 @@ class RelayConfigStore {
   }
 
   // Validates BEFORE anything is written (all-or-nothing, like the WiFi
-  // store): a half-written relay configuration must never exist.
-  bool save(const RelayConfig& cfg) {
-    if (backend_ == nullptr) return false;
+  // store): a half-written relay configuration must never exist. `why`
+  // (optional) receives the exact cause (task #171).
+  bool save(const RelayConfig& cfg, StoreWriteError* why = nullptr) {
+    if (backend_ == nullptr) { if (why) *why = StoreWriteError::NoBackend; return false; }
     if (!validRelayHost(cfg.host) || !validRelayKey(cfg.key) ||
-        cfg.port < 1 || cfg.port > 65535) return false;
+        cfg.port < 1 || cfg.port > 65535) {
+      if (why) *why = StoreWriteError::BadInput;
+      return false;
+    }
     std::string payload = cfg.host;
     payload += '\t';
     payload += std::to_string(static_cast<long long>(cfg.port));
     payload += '\t';
     payload += cfg.key;
     RegionScratch scratch(RELAY_CONFIG_REGION_MAX);
-    if (!scratch.ok()) return false;
+    if (!scratch.ok()) { if (why) *why = StoreWriteError::NoMemory; return false; }
     char* buf = scratch.data();
-    if (payload.size() + 7 > scratch.size()) return false;
+    if (payload.size() + 7 > scratch.size()) { if (why) *why = StoreWriteError::NoSpace; return false; }
     buf[0] = 'E';
     buf[1] = 'N';
     buf[2] = 'R';
@@ -400,7 +438,12 @@ class RelayConfigStore {
     buf[5] = static_cast<char>((payload.size() >> 8) & 0xff);
     buf[6] = static_cast<char>(payload.size() & 0xff);
     for (size_t i = 0; i < payload.size(); ++i) buf[7 + i] = payload[i];
-    return backend_->write(buf, payload.size() + 7);
+    if (!backend_->write(buf, payload.size() + 7)) {
+      if (why) *why = StoreWriteError::WriteFailed;
+      return false;
+    }
+    if (why) *why = StoreWriteError::None;  // always: a stale cause must never survive into a success
+    return true;
   }
 
   // Marks the region blank (the next boot opens the setup WiFi).

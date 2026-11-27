@@ -66,6 +66,23 @@ esac
 command -v arduino-cli >/dev/null 2>&1 || die "arduino-cli not found - install it (INSTALL.md section 3 shows the IDE alternative)"
 [ -f arduino/ESP_node/ESP_node.ino ] || die "run this from the repository root (arduino/ESP_node/ESP_node.ino not found)"
 
+# ── the ESP32 core must carry multi-page NVS blobs (task #171) ───────────
+# The node's whole EEPROM space is ONE 4096-byte blob (the WiFi region and
+# the relay configuration share it). The ESP32 EEPROM library stores that as
+# an NVS blob, and NVS caps a blob at 1984 bytes on the cores without
+# multi-page blob support (the arduino-esp32 1.0.x line, ESP-IDF 3.x):
+# EEPROM.begin() then fails its own space check and EVERY save afterwards
+# answers "Could not write the credentials to flash" — the node can never
+# leave the setup page. Refuse to build for esp32 on such a core instead of
+# flashing an uninstallable node; the esp8266 core has no such limit (a real
+# flash sector there).
+if [ "$BOARD" = esp32 ]; then
+  CORE_ESP32="$(arduino-cli core list 2>/dev/null | awk '$1 == "esp32" {print $2}')"
+  case "$CORE_ESP32" in
+    0.*|1.*) die "the installed esp32 core ('$CORE_ESP32') cannot hold the node's 4096-byte EEPROM blob (its NVS caps blobs at 1984 bytes) - upgrade: arduino-cli core update-index && arduino-cli core install esp32:esp32 (2.0.0 or newer)" ;;
+  esac
+fi
+
 # ── the port ─────────────────────────────────────────────────────────────
 if [ -z "$PORT" ]; then
   say "no --port given: looking for a board with arduino-cli board list"

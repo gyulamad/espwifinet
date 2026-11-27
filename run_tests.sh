@@ -108,6 +108,25 @@ echo ""
 echo "── flash-node.sh port detection (#165) ──"
 bash tests/shell/test_flash_node.sh || fail=1
 
+# #171: the setup form's browser script (Show/Hide toggles, row add/remove)
+# is embedded in setup_logic.h as a raw string and served as /setup.js — a
+# syntax error there would disable every button on the page while the C++
+# suite stays green. The step parses the extracted script with node.
+echo ""
+echo "── setup.js syntax (extracted from setup_logic.h, #171) ──"
+if command -v node >/dev/null 2>&1; then
+  node -e '
+    const fs = require("fs");
+    const h = fs.readFileSync("arduino/ESP_node/setup_logic.h", "utf8");
+    const m = h.match(/R"js\(([\s\S]*?)\)js"/);
+    if (!m) { console.error("FAIL: the setup form script was not found in setup_logic.h"); process.exit(1); }
+    new Function(m[1]);
+    console.log("setup.js parses clean (" + m[1].length + " bytes)");
+  ' || fail=1
+else
+  echo "node not found, skipping"
+fi
+
 # #144: the dashboard's PHP side now has its own coverage - a syntax lint of
 # every php file plus a real e2e of setup.php's first-run write (the
 # read-only-folder failure and the success path), driven through php -S.

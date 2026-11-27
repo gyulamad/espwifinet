@@ -250,6 +250,11 @@ inline const char* setupPageStyle() {
          "label{display:block;font-size:.85rem;margin-bottom:.25rem}"
          "input[type=text],input[type=password]{width:100%;box-sizing:border-box;font-size:1rem;padding:.45rem;margin:.15rem 0}"
          ".net{margin-bottom:.5rem}.net label{display:inline;font-size:.85rem}"
+         // #171: the Show/Hide button sits next to its password/key box; the
+         // box keeps the width, the button hugs its text.
+         ".pw{display:flex;gap:.4rem;align-items:stretch;margin:.15rem 0}"
+         ".pw input{flex:1 1 auto;min-width:0;margin:0}"
+         ".showpw{flex:0 0 auto;width:auto;padding:.45rem .9rem;margin:0;font-size:.9rem}"
          ".err{background:#fef2f2;border-color:#b91c1c}.note{font-size:.85rem;color:#374151}"
          "button{font-size:1rem;padding:.6rem 1rem;margin:.3rem 0;border-radius:.4rem;border:1px solid #1f2937;background:#1f2937;color:#fff;width:100%}button.rm,#addrow{width:auto;padding:.3rem .8rem;margin:.2rem 0}";
 }
@@ -268,14 +273,23 @@ inline void addSecurityHeaders(HttpReply& r, bool html) {
   }
 }
 
-// The form's Add/Remove rows helper (#138), served as /setup.js from the
-// node itself (same origin, the CSP's script-src 'self'). Vanilla JS, no
-// dependencies, no network calls: it clones the first row for "Add", a
-// Remove button drops its own row, and afterwards every row is RENUMBERED
-// so the POST stays sequential (w.ssid.1..N) - the server-side parser also
-// tolerates gaps, but sequential keeps the error messages readable. The
-// hard cap mirrors WIFI_STORE_MAX_NETS: the node's flash sector is the
-// physical limit.
+// The form's helper script (#138, extended by #171), served as /setup.js
+// from the node itself (same origin, the CSP's script-src 'self'). Vanilla
+// JS, no dependencies, no network calls, no inline handlers:
+//  * the Show/Hide button next to every password box (#171): the WiFi
+//    passwords and above all the relay's nodeKey are long values nobody can
+//    proofread blind — the button flips the box between type=password and
+//    type=text. The buttons are created HERE (not in the page HTML), so a
+//    no-JavaScript browser shows the plain form it always did.
+//  * the row selectors are CLASS-based (.ssid/.pass/.open), not
+//    type-based: a revealed box is type=text, and a type-based selector
+//    would then rename or clone the wrong field.
+//  * "Add" clones the first row and resets the clone's password box to
+//    hidden and its button to Show; afterwards every row is RENUMBERED so
+//    the POST stays sequential (w.ssid.1..N) - the server-side parser also
+//    tolerates gaps, but sequential keeps the error messages readable. The
+//    hard cap mirrors WIFI_STORE_MAX_NETS: the node's flash sector is the
+//    physical limit.
 inline const char* setupFormJavaScript() {
   return R"js((function(){
   var fieldset = document.querySelector('fieldset');
@@ -285,23 +299,53 @@ inline const char* setupFormJavaScript() {
     var rows = fieldset.querySelectorAll('.net');
     for (var i = 0; i < rows.length; i++) {
       var n = i + 1;
-      var ss = rows[i].querySelector('input[type=text]');
-      var pw = rows[i].querySelector('input[type=password]');
-      var op = rows[i].querySelector('input[type=checkbox]');
+      var ss = rows[i].querySelector('input.ssid');
+      var pw = rows[i].querySelector('input.pass');
+      var op = rows[i].querySelector('input.open');
       if (ss) ss.name = 'w.ssid.' + n;
       if (pw) pw.name = 'w.pass.' + n;
       if (op) op.name = 'w.open.' + n;
     }
   }
+  function resetToggle(input) {
+    input.type = 'password';
+    var btn = input.parentNode.querySelector('.showpw');
+    if (btn) {
+      btn.textContent = 'Show';
+      btn.setAttribute('aria-pressed', 'false');
+    }
+  }
+  // #171: wrap every password box with a Show/Hide toggle button.
+  function addToggle(input) {
+    var wrap = document.createElement('span');
+    wrap.className = 'pw';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'showpw';
+    btn.textContent = 'Show';
+    btn.setAttribute('aria-pressed', 'false');
+    btn.setAttribute('aria-label', 'show or hide the typed value');
+    btn.addEventListener('click', function () {
+      var show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.textContent = show ? 'Hide' : 'Show';
+      btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+    });
+    wrap.appendChild(btn);
+  }
+  var pws = document.querySelectorAll('input[type=password]');
+  for (var i = 0; i < pws.length; i++) addToggle(pws[i]);
   addBtn.addEventListener('click', function () {
     var rows = fieldset.querySelectorAll('.net');
     if (rows.length >= 30) return; // the flash sector's cap; the server refuses more anyway
     var fresh = rows[0].cloneNode(true);
-    var ss = fresh.querySelector('input[type=text]');
-    var pw = fresh.querySelector('input[type=password]');
-    var op = fresh.querySelector('input[type=checkbox]');
+    var ss = fresh.querySelector('input.ssid');
+    var pw = fresh.querySelector('input.pass');
+    var op = fresh.querySelector('input.open');
     if (ss) ss.value = '';
-    if (pw) pw.value = '';
+    if (pw) { pw.value = ''; resetToggle(pw); }
     if (op) op.checked = false;
     fieldset.insertBefore(fresh, addWrap);
     renumber();
@@ -500,12 +544,17 @@ inline bool buildRelayConfig(const std::vector<FormField>& fields, const RelayCo
 // one" placeholder must never silently cut a longer stored password).
 inline std::string netRowHtml(int index, const std::string& ssid, bool hasPassword, bool open) {
   const std::string n = std::to_string(static_cast<long long>(index));
-  return "<div class=\"net\"><input type=\"text\" name=\"" + rowField("ssid", index) + "\" maxlength=\"32\" value=\"" +
-         htmlEscape(ssid) + "\" placeholder=\"network name " + n +
+  // The inputs carry classes (#171): the browser script selects .ssid/.pass/
+  // .open instead of input[type=text|password], because the Show button
+  // flips a password box's type at runtime and a type-based selector would
+  // then rename or clone the wrong field.
+  return "<div class=\"net\"><input type=\"text\" class=\"ssid\" name=\"" + rowField("ssid", index) +
+         "\" maxlength=\"32\" value=\"" + htmlEscape(ssid) + "\" placeholder=\"network name " + n +
          "\" autocapitalize=\"off\" autocomplete=\"off\" spellcheck=\"false\">"
-         "<input type=\"password\" name=\"" + rowField("pass", index) + "\" autocomplete=\"new-password\" placeholder=\"" +
+         "<input type=\"password\" class=\"pass\" name=\"" + rowField("pass", index) +
+         "\" autocomplete=\"new-password\" placeholder=\"" +
          std::string(hasPassword ? "password set - blank keeps it" : "password") + "\">"
-         "<label><input type=\"checkbox\" name=\"" + rowField("open", index) + "\" value=\"1\"" +
+         "<label><input type=\"checkbox\" class=\"open\" name=\"" + rowField("open", index) + "\" value=\"1\"" +
          (open ? " checked" : "") + "> open network</label>"
          "<button type=\"button\" class=\"rm\">Remove</button></div>";
 }
@@ -592,7 +641,9 @@ inline std::string renderForm(const std::string& title, const WifiStoreNet* stor
        "\" placeholder=\"relay IP or hostname\" autocapitalize=\"off\" autocomplete=\"off\" spellcheck=\"false\">"
        "<input type=\"text\" name=\"r.port\" maxlength=\"5\" inputmode=\"numeric\" value=\"" + htmlEscape(portShown) +
        "\" placeholder=\"port (7777 if left blank)\">"
-       "<input type=\"password\" name=\"r.key\" autocomplete=\"new-password\" placeholder=\"" +
+       // #171: class="pass" so the browser script attaches a Show/Hide button
+       // here too — the nodeKey is a long hash nobody can proofread blind.
+       "<input type=\"password\" class=\"pass\" name=\"r.key\" autocomplete=\"new-password\" placeholder=\"" +
        std::string(relayHasKey ? "key set - blank keeps it" : "the relay's nodeKey") + "\">";
   h += "</fieldset>";
   h += "<button type=\"submit\">Save and restart</button></form>";
@@ -728,18 +779,28 @@ class SetupForm {
 
     say("save: valid - " + std::to_string(static_cast<long long>(count)) + " network(s), relay " + relay.host + ":" +
         std::to_string(static_cast<long long>(relay.port)) + " - writing the WiFi list to flash");
-    if (!store_.save(nets.data(), count)) {
-      say("save: FAILED - the WiFi list could not be written to flash");
-      return textReply(500, "Could not write the credentials to flash; nothing was changed - try again");
+    espnet::StoreWriteError why = espnet::StoreWriteError::None;
+    if (!store_.save(nets.data(), count, &why)) {
+      // #171: name the exact cause on the serial line AND on the page — the
+      // old one-line "nothing was changed" answer left a stuck install
+      // undiagnosable unless the board sat next to a monitor.
+      say("save: FAILED - the WiFi list could not be written to flash (" +
+          std::string(espnet::storeWriteErrorText(why)) + ")");
+      return textReply(500, std::string("Could not write the credentials to flash (") +
+                            espnet::storeWriteErrorText(why) + "); nothing was changed - try again");
     }
     say("save: WiFi list written - writing the relay configuration to flash");
-    if (!relayStore_.save(relay)) {
+    if (!relayStore_.save(relay, &why)) {
       // The WiFi list is in; the relay configuration refused to persist.
-      // Stay in setup: the next save rewrites both (the WiFi rows the form
-      // brings back are now the stored ones, and their passwords are kept
-      // by the blank-field rule).
-      say("save: FAILED - the relay configuration could not be written to flash");
-      return textReply(500, "Could not write the relay configuration to flash - the WiFi list was saved; try again");
+      // Stay in setup: the next save rewrites both. Reload the store so the
+      // retry's form shows the NOW-stored rows ("blank keeps it" — the WiFi
+      // password does not have to be typed again, #171).
+      storedCount_ = store_.load(stored_, WIFI_STORE_MAX_NETS);
+      say("save: FAILED - the relay configuration could not be written to flash (" +
+          std::string(espnet::storeWriteErrorText(why)) + "); the WiFi list IS stored, the form shows it");
+      return textReply(500, std::string("Could not write the relay configuration to flash (") +
+                            espnet::storeWriteErrorText(why) +
+                            ") - the WiFi list was saved; try again");
     }
     saved_ = true;
     say("save: both flash stores written - answering, the node restarts next");

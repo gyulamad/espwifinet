@@ -533,12 +533,32 @@ static void testWifiStore() {
   assert(store.load(back, espnet::WIFI_STORE_MAX_NETS) == 0);
   backend.failWrite_ = true;
   assert(!store.save(nets, 2)); // nothing was changed
+  // #171: the failure names its cause (optional out-param, the 2-arg form
+  // keeps working for callers that do not care)
+  espnet::StoreWriteError why = espnet::StoreWriteError::None;
+  assert(!store.save(nets, 2, &why));
+  assert(why == espnet::StoreWriteError::WriteFailed);
   backend.failWrite_ = false;
   // save refuses invalid input before touching the backend
   WifiStoreNet bad[1];
   bad[0].ssid = "Home";
   bad[0].pass = "short";
   assert(!store.save(bad, 1));
+  assert(!store.save(bad, 1, &why));
+  assert(why == espnet::StoreWriteError::BadInput);
+  assert(store.save(nets, 2, &why));
+  assert(why == espnet::StoreWriteError::None);
+  // a store that never began has no backend to write through
+  espnet::WifiStore unbegun;
+  assert(!unbegun.save(nets, 1, &why));
+  assert(why == espnet::StoreWriteError::NoBackend);
+  // the cause texts exist for every reason (the form embeds them in its
+  // serial lines and on the 500 page)
+  assert(std::string(espnet::storeWriteErrorText(espnet::StoreWriteError::None)) == "no error");
+  assert(std::string(espnet::storeWriteErrorText(espnet::StoreWriteError::WriteFailed)) ==
+         "the flash write did not persist");
+  assert(std::string(espnet::storeWriteErrorText(espnet::StoreWriteError::BadInput)) ==
+         "a value did not pass validation");
 
   // #138: the store holds 30 networks (the flash sector's cap) - a full
   // round-trip at capacity, byte-for-byte back
@@ -578,8 +598,11 @@ static void testRelayConfigStore() {
 
   // validation refuses BEFORE any write (all-or-nothing)
   espnet::RelayConfig bad = cfg;
+  espnet::StoreWriteError rwhy = espnet::StoreWriteError::None;
   bad.host = "";
   assert(!store.save(bad));
+  assert(!store.save(bad, &rwhy)); // #171: the cause rides along
+  assert(rwhy == espnet::StoreWriteError::BadInput);
   bad.host = "192.168.1.10";
   bad.port = 0;
   assert(!store.save(bad));
@@ -588,6 +611,13 @@ static void testRelayConfigStore() {
   assert(!store.save(bad));
   back = espnet::RelayConfig();
   assert(store.load(back) && back.key == "fleet-key-123"); // nothing changed
+  // a failed write names itself (task #171)
+  backend.failWrite_ = true;
+  assert(!store.save(cfg, &rwhy));
+  assert(rwhy == espnet::StoreWriteError::WriteFailed);
+  backend.failWrite_ = false;
+  assert(store.save(cfg, &rwhy));
+  assert(rwhy == espnet::StoreWriteError::None);
 
   // damaged region reads as "not configured" (which means: the portal)
   std::string damaged = "ENRC";
@@ -777,6 +807,15 @@ static void testSetupForm() {
   assert(page.body.find("Relay (the Pi this node reports to)") != std::string::npos);
   assert(page.body.find("name=\"r.host\"") != std::string::npos);
   assert(page.body.find("name=\"r.key\"") != std::string::npos);
+  // #171: the inputs carry classes (the script selects by class, not by
+  // type — a Show button flips the type at runtime), and the Show/Hide
+  // buttons themselves are created BY the script, so the static page and a
+  // no-JavaScript browser show exactly the form it always did
+  assert(page.body.find("class=\"ssid\"") != std::string::npos);
+  assert(page.body.find("class=\"pass\"") != std::string::npos);
+  assert(page.body.find("class=\"open\"") != std::string::npos);
+  assert(page.body.find("type=\"password\" class=\"pass\" name=\"r.key\"") != std::string::npos);
+  assert(page.body.find("class=\"showpw\"") == std::string::npos); // no static toggle button (the CSS style may mention it)
   assert(page.body.find("onclick=") == std::string::npos);
   assert(page.body.find("<script>") == std::string::npos);   // nothing inline
   bool hasCsp = false;
@@ -793,6 +832,16 @@ static void testSetupForm() {
   assert(js.body.find("renumber") != std::string::npos);
   assert(js.body.find("'w.ssid.' + n") != std::string::npos);
   assert(js.body.find("rows.length >= 30") != std::string::npos);
+  // #171: the Show/Hide toggle rides the same same-origin script
+  assert(js.body.find("input[type=password]") != std::string::npos); // buttons attach to every password box
+  assert(js.body.find(".showpw") != std::string::npos);
+  assert(js.body.find("aria-pressed") != std::string::npos);
+  assert(js.body.find("input.type === 'password'") != std::string::npos); // the flip
+  assert(js.body.find("input.ssid") != std::string::npos &&
+         js.body.find("input.pass") != std::string::npos &&
+         js.body.find("input.open") != std::string::npos); // class-based renumber
+  assert(js.body.find("input[type=text]") == std::string::npos); // no type-based selector left
+  assert(js.body.find("resetToggle") != std::string::npos); // an added row starts hidden again
   bool jsHeaders = false;
   for (size_t i = 0; i < js.headers.size(); ++i) {
     if (js.headers[i].first == "Cache-Control" && js.headers[i].second == "no-store") jsHeaders = true;
@@ -1093,21 +1142,40 @@ static void testSetupSaveNarration() {
   assert(log.has("save: rejected - 1 validation error(s), nothing written"));
   assert(backend.blank_);
 
-  // a flash failure is named (and the node stays in setup)
+  // a flash failure is named (and the node stays in setup) — and since #171
+  // the line and the page carry the EXACT cause, so a stuck install can be
+  // diagnosed from the serial monitor alone
   backend.failWrite_ = true;
-  assert(form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=hunter2hunter2")).status == 500);
-  assert(log.has("save: FAILED - the WiFi list could not be written to flash"));
+  espnet::HttpReply failed = form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=hunter2hunter2"));
+  assert(failed.status == 500);
+  assert(log.has("save: FAILED - the WiFi list could not be written to flash (the flash write did not persist)"));
+  assert(failed.body.find("Could not write the credentials to flash (the flash write did not persist)") !=
+         std::string::npos);
+  assert(backend.blank_); // the failed write changed nothing
   backend.failWrite_ = false;
   relayBackend.failWrite_ = true;
-  assert(form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=hunter2hunter2")).status == 500);
-  assert(log.has("save: FAILED - the relay configuration could not be written to flash"));
+  failed = form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=hunter2hunter2"));
+  assert(failed.status == 500);
+  assert(log.has("save: FAILED - the relay configuration could not be written to flash (the flash write did not persist)"));
+  assert(failed.body.find("Could not write the relay configuration to flash (the flash write did not persist)") !=
+         std::string::npos);
+  assert(failed.body.find("the WiFi list was saved") != std::string::npos);
   relayBackend.failWrite_ = false;
-
-  // the good save walks every stage in order
-  assert(form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=hunter2hunter2")).status == 200);
+  // the partial failure STORED the WiFi list: the retry's form shows the
+  // stored rows ("blank keeps it"), so the password does not have to be
+  // typed again (#171 — the form used to keep its stale factory snapshot)
+  espnet::HttpReply retry = form.handle("GET", "/", "");
+  assert(retry.body.find("value=\"Home\"") != std::string::npos);
+  assert(retry.body.find("password set - blank keeps it") != std::string::npos);
+  assert(retry.body.find("hunter2hunter2") == std::string::npos); // still never echoed
+  // and a retry save can leave the password box blank on the stored row:
+  // the good save walks every stage in order (the stored password is kept)
+  assert(form.handle("POST", "/save", saveBody("w.ssid.1=Home")).status == 200);
   assert(log.has("save: valid - 1 network(s), relay 192.168.1.10:7777"));
   assert(log.has("save: WiFi list written"));
   assert(log.has("save: both flash stores written"));
+  // the session is done now: a further save is refused
+  assert(form.handle("POST", "/save", saveBody("w.ssid.1=Home&w.pass.1=hunter2hunter2")).status == 409);
 
   // NO secret ever reaches the serial port: not the WiFi password, not the
   // relay key, not the CSRF token

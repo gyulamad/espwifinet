@@ -14,6 +14,11 @@
 #   scenario 4: --port given -> the full flow runs: compile with the esp8266
 #               FQBN, upload to the given port, "flashed." printed;
 #   scenario 5: --board esp32 -> the compile rides the ESP32 FQBN.
+#   scenario 6: --board esp32 on the 1.0.x ESP32 core (task #171) -> refused:
+#               that core's NVS caps blobs at 1984 bytes, below the node's
+#               4096-byte EEPROM blob, so every save would fail; nothing may
+#               be compiled;
+#   scenario 7: --board esp32 on a 2.x+ core -> the flow runs.
 
 set -u
 
@@ -61,6 +66,9 @@ case "$cmd" in
     mkdir -p build && : > build/ESP_node.ino.bin ;;
   upload)
     echo "upload $*" >> "$STUB_LOG" ;;
+  core)
+    # task #171: flash-node.sh checks the installed esp32 core's version
+    printf '%s\n' "${STUB_CORE_LIST:-}" ;;
 esac
 exit 0
 STUB
@@ -69,7 +77,7 @@ chmod +x "$tmp/bin/arduino-cli"
 run_flash() { # <board-list-fixture|-> [extra args...]
   local fixture="$1"; shift
   : > "$tmp/stub.log"
-  STUB_BOARD_LIST="$fixture" STUB_LOG="$tmp/stub.log" \
+  STUB_BOARD_LIST="$fixture" STUB_LOG="$tmp/stub.log" STUB_CORE_LIST="${STUB_CORE_LIST:-}" \
     PATH="$tmp/bin:$PATH" bash "$tmp/node/flash-node.sh" "$@" > "$tmp/out.txt" 2> "$tmp/err.txt"
 }
 
@@ -133,6 +141,31 @@ if [ "$rc" -eq 0 ] && grep -q 'compile --fqbn esp32:esp32:esp32' "$tmp/stub.log"
   echo "[PASS] --board esp32: compiled for esp32:esp32:esp32"
 else
   echo "[FAIL] --board esp32: exit $rc, stub log:"; cat "$tmp/stub.log" 2>/dev/null
+  fail=1
+fi
+
+# ── scenario 6: --board esp32 on the 1.0.x core is refused (task #171) ──
+STUB_CORE_LIST="esp32 1.0.6" run_flash unknown-tabs --board esp32 --port /dev/null
+rc=$?
+out="$(cat "$tmp/out.txt" "$tmp/err.txt")"
+if [ "$rc" -eq 1 ] \
+   && printf '%s' "$out" | grep -q "cannot hold the node's 4096-byte EEPROM blob" \
+   && ! printf '%s' "$out" | grep -q 'flashed.' \
+   && [ ! -s "$tmp/stub.log" ]; then
+  echo "[PASS] esp32 core 1.0.x: refused with the NVS 1984-byte blob explanation, nothing compiled"
+else
+  echo "[FAIL] esp32 core 1.0.x: exit $rc, expected the core refusal and no compile; output:"
+  printf '%s\n' "$out"; cat "$tmp/stub.log" 2>/dev/null
+  fail=1
+fi
+
+# ── scenario 7: --board esp32 on a 2.x core runs the flow ──
+STUB_CORE_LIST="esp32 2.0.17" run_flash unknown-tabs --board esp32 --port /dev/null
+rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'compile --fqbn esp32:esp32:esp32' "$tmp/stub.log"; then
+  echo "[PASS] esp32 core 2.x: compiled without the gate firing"
+else
+  echo "[FAIL] esp32 core 2.x: exit $rc, stub log:"; cat "$tmp/stub.log" 2>/dev/null
   fail=1
 fi
 

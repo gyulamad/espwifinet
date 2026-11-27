@@ -305,13 +305,17 @@ How the first install goes:
    with its own Remove button). A blank password field on a row whose
    network is already stored keeps that password. The node always joins the
    STRONGEST of the saved networks, so list every floor/extender the node
-   may sit on.
+   may sit on. Every password box has a **Show** button next to it (task
+   #171): tap it to see what you typed while proofreading — tap again to
+   hide.
 4. Fill the **Relay** section: the Pi's IP or hostname, the port (blank
-   means 7777), and the relay's `nodeKey`. The node cannot do its job
-   without them, so the save refuses to store half a configuration: the
-   WiFi list and the relay settings are written together or not at all.
-   The key is never shown back — a blank field keeps the stored one.
-4. **Save and restart** — the page refuses anything incomplete without
+   means 7777), and the relay's `nodeKey`. The key box has the same
+   **Show** button — the nodeKey is a long hash nobody can proofread blind.
+   The node cannot do its job without them, so the save refuses to store
+   half a configuration: the WiFi list and the relay settings are written
+   together or not at all. The key is never shown back — a blank field
+   keeps the stored one.
+5. **Save and restart** — the page refuses anything incomplete without
    storing half of it (all-or-nothing), writes the list to the node's flash
    and restarts the node. The setup WiFi disappears; the node joins the
    strongest saved network and dials the relay as usual.
@@ -323,6 +327,16 @@ Details worth knowing:
   carry: a per-session CSRF token on the POST, strict request parsing with
   size caps, security headers, HTML-escaped output, and passwords are never
   echoed back into the page.
+- **If a save ever answers "Could not write … to flash (…)"**, the reason in
+  parentheses names the exact stage (task #171) and the serial monitor
+  (115200, section 3 shows the command) carries the same line — send that
+  line to the task board when asking for help. "the flash write did not
+  persist" means the board refused the write: on an ESP32 that has been the
+  build's ESP32 core version — the node's whole EEPROM space is one
+  4096-byte NVS blob, and cores older than arduino-esp32 2.0.0 (the 1.0.x
+  line, ESP-IDF 3.x) cap NVS blobs at 1984 bytes, so every save fails;
+  `flash-node.sh` refuses to compile for esp32 on such a core. The ESP8266
+  stores the same space in a real flash sector and has no such limit.
 - The flash store is the ONLY credential source. The store also carries two flags: `provisioned` (set the
   moment the node's first WiFi connect succeeds, so a power cut right after
   cannot resurrect the setup WiFi) and `setup-armed` (cleared by the setup
@@ -412,6 +426,7 @@ from the first release on.
 | Node joined nothing after a save | wrong password or hidden network. After a save the node goes straight to joining the saved network(s); if it has not connected once after about a minute it opens its setup WiFi again for a minute at a time, so rejoin `espnode-setup-…` from your phone and fix the row (a blank password field keeps the stored one). Once a node has connected successfully it no longer does this: arm SETUP_MODE on the dashboard and power-cycle it instead. The save disarms the node again. To start over completely, erase the flash (section 3, "Start a node over (erase the flash)"). |
 | The serial log says reset reason `Brownout`, or the node restarts when its WiFi starts | the board's power is too weak for the radio: use a short, good USB cable and a port or charger that can deliver at least 500 mA (not an unpowered hub or a thin cable), and avoid powering it from a pin header with a long wire. No setting in the firmware can compensate for it. |
 | The setup page hangs after "Save and restart" | open the Serial Monitor (115200) BEFORE pressing save and watch the `[setup]` lines: `connection accepted` → `POST /save` → `save: both flash stores written` → `reply 200 sent` → `setup: saved - restarting now`. The last line that appears is where it stopped. After the restart the first `boot:` lines print the reset reason: `Exception`, `Hardware Watchdog` or `Software Watchdog` (instead of a software restart) means the node crashed during the save. While the setup WiFi is up an `alive:` line prints every few seconds (phones joined, open connections, free heap, lowest free stack). Passwords and keys are never printed. |
+| The save answers "Could not write … to flash (…)" | the reason in parentheses names the failing stage and the serial monitor carries the same `[setup]` line. On an ESP32, "the flash write did not persist" with every save failing has been the ESP32 core version: the node's EEPROM space is one 4096-byte NVS blob and cores older than arduino-esp32 2.0.0 cap NVS blobs at 1984 bytes — `flash-node.sh` refuses that build; upgrade the core (`arduino-cli core update-index && arduino-cli core install esp32:esp32`) and flash again. The ESP8266 stores the blob in a real flash sector and has no such limit. |
 | `cp config.example.php config.php` says "Permission denied" | the `espdash` folder belongs to the web server user, so your own login cannot write there — run the manual copy through sudo as shown in section 2 (or use the setup page, which writes the file as the web server user). |
 
 ## 8. Running the tests
