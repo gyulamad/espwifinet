@@ -233,10 +233,26 @@ static void onSetGpio(const char* state, long pin, bool activeHigh) {
 }
 
 static void onSetupMode(bool armed) {
-  if (!armed || wifiStore.setupArmed()) return; // only the rising edge arms
+  if (!armed) {
+    // The falling edge DISARMS (#160): SETUP_MODE is a maintenance switch,
+    // not a one-way trap. Before this, an armed session that never saved had
+    // no exit but a reflash — the flag kept reopening 60 s portals on every
+    // boot and nothing could cancel it. The command arrives while the node
+    // is in its normal flow (between setup windows, relay connected), which
+    // is exactly when the operator wants to cancel from the dashboard.
+    if (!wifiStore.setupArmed()) return;
+    if (wifiStore.armSetup(false)) {
+      nodeLog.logf(espnet::LOG_WARN, "setup disarmed from the dashboard - no more setup windows");
+    } else {
+      nodeLog.logf(espnet::LOG_ERROR, "setup: could not clear the armed flag in flash");
+    }
+    return;
+  }
+  if (wifiStore.setupArmed()) return; // only the rising edge arms
   if (wifiStore.armSetup(true)) {
     nodeLog.logf(espnet::LOG_WARN,
-                 "setup armed from the dashboard - restarting into the setup WiFi '%s'",
+                 "setup armed from the dashboard - restarting into the setup WiFi '%s' "
+                 "(windows repeat until saved or disarmed)",
                  portal.ssid().c_str());
     ESP.restart(); // the boot decision (armed) opens the setup WiFi
   } else {
@@ -356,8 +372,10 @@ void setup() {
                  provisionedDone ? 1 : 0, portal.ssid().c_str());
     const uint32_t serveCapMs = espnet::bootPortalServeCapMs(effectiveCount == 0, SETUP_SERVE_MAX_MS);
     nodeLog.logf(espnet::LOG_INFO, "setup: portal window %s",
-                 serveCapMs == 0 ? "unbounded (factory node, serves until saved)" : "bounded (the node holds credentials)");
-    portal.start(serveCapMs); // factory: forever; holds credentials: bounded window (#152)
+                 serveCapMs == 0 ? "unbounded (factory node, serves until saved)"
+                                 : "bounded but idle-aware (holds while a station is joined; windows repeat until "
+                                   "saved or disarmed while SETUP_MODE is armed)");
+    portal.start(serveCapMs); // factory: forever; holds credentials: bounded window (#152, #160)
     portalActive = true;
   } else if (!provisionedDone) {
     // Saved credentials + relay, never connected yet (the reboot after the
@@ -436,20 +454,25 @@ void loop() {
     ota.tick(FW);
   }
 
-  // #152: the first install is still incomplete (credentials saved but no
-  // join ever succeeded) and no portal is up: reopen the setup WiFi in
-  // bounded windows so a wrong password can always be fixed from the phone.
+  // #152, widened by #160 (setupWindowReopens): reopen the setup WiFi in
+  // bounded windows while the first install is still incomplete (credentials
+  // saved but no join ever succeeded — a wrong password must stay fixable
+  // from the phone) or while SETUP_MODE is armed (the operator asked for a
+  // setup session: it must stay reachable until it is saved or disarmed from
+  // the dashboard, not vanish after one window — the stranded-operator bug).
   // The portal and the join attempts alternate — a scan or connect while the
   // AP serves would switch the radio's channel and kill the phone's session
-  // mid-form. A provisioned node never comes back here: its outage just
-  // retries, re-entry is deliberate (arm SETUP_MODE from the dashboard).
-  if (!provisionedDone && portalClosedMs != 0 &&
+  // mid-form, which is why handback is not the end of the session but a
+  // pause. A provisioned node nobody armed never comes back here: its outage
+  // just retries.
+  if (espnet::setupWindowReopens(provisionedDone, wifiStore.setupArmed()) && portalClosedMs != 0 &&
       static_cast<uint32_t>(millis() - portalClosedMs) >= SETUP_RETRY_WINDOW_MS) {
     portalClosedMs = 0; // one window per pause; the next handback restarts the cycle
     portal.start(SETUP_SERVE_MAX_MS);
     portalActive = true;
     nodeLog.logf(espnet::LOG_WARN,
-                 "wifi: still not provisioned - reopening the setup WiFi '%s' for a bounded window",
+                 "%s - reopening the setup WiFi '%s' for a bounded window (the window holds while a station is joined)",
+                 provisionedDone ? "setup armed from the dashboard" : "wifi: still not provisioned",
                  portal.ssid().c_str());
   }
   flushLogs();

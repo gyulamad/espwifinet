@@ -299,8 +299,15 @@ again on a mere outage.
 | When the setup WiFi opens | |
 | --- | --- |
 | The node has NEVER joined a stored network (`provisioned` flag unset in flash): factory state, or credentials saved but never connected with | immediately after boot, and it serves until the form is saved — however long that takes |
-| SETUP_MODE armed from the dashboard (the maintenance switch below) | immediately after boot, regardless of the provisioned flag; the armed flag clears itself when the setup form saves |
+| SETUP_MODE armed from the dashboard (the maintenance switch below) | immediately after boot, regardless of the provisioned flag; the window **holds while a phone/laptop is joined** (task #160) and **windows repeat** until the form saves or SETUP_MODE is disarmed — no reflash and no boot-time sprint needed |
 | A provisioned node (first install complete) that lost its WiFi | NEVER — it retries with the normal scan/connect flow; no captive portal reappears where anyone nearby could join it |
+
+Every bounded window is idle-aware (task #160): the countdown measures the
+time the setup WiFi sat EMPTY, not the time since it opened. A joined
+station is somebody mid-setup — their session holds the window open; when
+the setup WiFi is empty again for a full window, the node hands back to its
+normal flow (and, while SETUP_MODE is armed, reopens the window about a
+minute later).
 
 How the first install goes:
 
@@ -359,10 +366,16 @@ Details worth knowing:
 - **Re-entering setup deliberately (SETUP_MODE):** the dashboard's
   Settings page has a "WiFi setup re-entry" maintenance switch. While it is
   ON, every node that (re)boots opens its setup WiFi instead of connecting;
-  the setup form's save clears the armed flag on that node. Turn the switch
-  on, power-cycle the ONE node to re-provision, save its WiFi, then turn the
-  switch back off — it is fleet-wide by design (the relay's settings are one
-  set), so treat it as a wrench, not a switch you leave on.
+  the setup form's save clears the armed flag on that node. Since task #160
+  the armed session cannot strand a node any more: the window holds while
+  your phone/laptop stays joined, and if the window hands back it REOPENS
+  about a minute later — so take your time, the form will not vanish under
+  you. Switching SETUP_MODE OFF on the dashboard disarms the nodes that
+  never saved: the command reaches a node between two windows (when it is
+  connected to the relay again), and it then stops reopening the setup
+  WiFi. The switch is fleet-wide by design (the relay's settings are one
+  set), so treat it as a wrench, not a switch you leave on — but a stuck
+  session is now fixed by turning it OFF, not by a reflash.
 - The setup WiFi never opens while the node is connected and healthy, and
   never on a provisioned node in a WiFi outage. The setup WiFi's own password is public (it ships in
   the repository) — the gate keeps drive-by neighbours out, and the page
@@ -443,8 +456,9 @@ from the first release on.
 | OTA never updates | Firmware page shows what the relay serves; node logs show each check. A refused upload means the file is not an ESP image (missing 0xE9 header). |
 | Dashboard shows "relay unreachable" | the relay service is not running or `relay_url`/`relay_key` in `config.php` do not match the relay's `config.js`. |
 | `setup.php` says "could not create a temporary file" | the web server cannot write the `espdash` folder — `sudo chown www-data:www-data /var/www/html/espdash` (`www-data` is the Debian/Raspberry Pi OS default; `ps aux | grep php-fpm` shows yours), then reload the page. The page detects this itself and shows the same fix before you fill the form. |
-| The `espnode-setup-…` WiFi does not appear | the node is provisioned (it has completed a first successful WiFi connect, flag stored in flash) and is retrying — a provisioned node never auto-opens the setup WiFi. To re-enter setup deliberately: Settings page → "WiFi setup re-entry" ON, power-cycle the node, save its WiFi, switch OFF. The serial monitor shows the boot decision. |
-| Node joined nothing after a save | wrong password or hidden network. After a save the node goes straight to joining the saved network(s); if it has not connected once after about a minute it opens its setup WiFi again for a minute at a time, so rejoin `espnode-setup-…` from your phone and fix the row (a blank password field keeps the stored one). Once a node has connected successfully it no longer does this: arm SETUP_MODE on the dashboard and power-cycle it instead. The save disarms the node again. To start over completely, erase the flash (section 3, "Start a node over (erase the flash)"). |
+| The `espnode-setup-…` WiFi does not appear | the node is provisioned (it has completed a first successful WiFi connect, flag stored in flash) and SETUP_MODE is not armed — a provisioned node never auto-opens the setup WiFi. To re-enter setup deliberately: Settings page → "WiFi setup re-entry" ON, power-cycle the node, then join the setup WiFi when it appears (with SETUP_MODE armed the window repeats about every minute until you save or the switch goes OFF — task #160). The serial monitor shows the boot decision. |
+| Node joined nothing after a save | wrong password or hidden network. After a save the node goes straight to joining the saved network(s); if it has not connected once after about a minute it opens its setup WiFi again for a minute at a time, so rejoin `espnode-setup-…` from your phone and fix the row (a blank password field keeps the stored one). The window holds while your phone stays joined (task #160). Once a node has connected successfully it no longer does this: arm SETUP_MODE on the dashboard and power-cycle it instead. The save disarms the node again. To start over completely, erase the flash (section 3, "Start a node over (erase the flash)"). |
+| The setup WiFi vanished while I was typing (portal died mid-form) | pre-#160 firmware closed every bounded window on a 60 s clock even with a phone joined; the phone then fell back to its home WiFi and a provisioned node never reopened the portal (the "only a reflash helps" trap). Update the node (OTA or a reflash once) — from then on a joined phone holds the window open and, while SETUP_MODE is armed, the window reopens about every minute until saved or disarmed. Until the node runs the new firmware, power-cycle it and join quickly, then stay joined. |
 | The serial log says reset reason `Brownout`, or the node restarts when its WiFi starts | the board's power is too weak for the radio: use a short, good USB cable and a port or charger that can deliver at least 500 mA (not an unpowered hub or a thin cable), and avoid powering it from a pin header with a long wire. No setting in the firmware can compensate for it. |
 | The setup page hangs after "Save and restart" | open the Serial Monitor (115200) BEFORE pressing save and watch the `[setup]` lines: `connection accepted` → `POST /save` → `save: both flash stores written` → `reply 200 sent` → `setup: saved - restarting now`. The last line that appears is where it stopped. After the restart the first `boot:` lines print the reset reason: `Exception`, `Hardware Watchdog` or `Software Watchdog` (instead of a software restart) means the node crashed during the save. While the setup WiFi is up an `alive:` line prints every few seconds (phones joined, open connections, free heap, lowest free stack). Passwords and keys are never printed. |
 | The save answers "Could not write … to flash (…)" | the reason in parentheses names the failing stage and the serial monitor carries the same `[setup]` line. On an ESP32, "the flash write did not persist" with every save failing has been the ESP32 core version: the node's EEPROM space is one 4096-byte NVS blob and cores older than arduino-esp32 2.0.0 cap NVS blobs at 1984 bytes — `flash-node.sh` refuses that build; upgrade the core (`arduino-cli core update-index && arduino-cli core install esp32:esp32`) and flash again. The ESP8266 stores the blob in a real flash sector and has no such limit — but on an ESP8266 with a **1MB or 2MB chip flashed with the 4MB NodeMCU layout** every save fails the same way (the settings sector lies beyond the chip): check `esptool --port /dev/ttyUSB0 flash-id` and re-flash with `./flash-node.sh` (it builds the chip's own layout; section 3, "Flash size"). |

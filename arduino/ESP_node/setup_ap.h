@@ -300,6 +300,12 @@ class ArduinoSetupNet : public ISetupNet {
 
   bool running() const { return running_; }
 
+  // The idle-aware window's busy signal (#160): how many phones/laptops are
+  // joined to the setup WiFi right now. Zero stations = nobody at the
+  // portal, the window's countdown runs; any station = somebody mid-setup,
+  // the countdown resets (setup_logic.h).
+  int stationsConnected() const override { return running_ ? static_cast<int>(WiFi.softAPgetStationNum()) : 0; }
+
  private:
   struct Slot {
     bool used = false;

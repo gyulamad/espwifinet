@@ -770,6 +770,16 @@ static void testSetupDecisions() {
   assert(espnet::bootPortalServeCapMs(true, 60000) == 0);
   assert(espnet::bootPortalServeCapMs(false, 60000) == 60000);
   assert(espnet::bootPortalServeCapMs(false, 1) == 1);
+
+  // #160: after a handback the sketch reopens the setup WiFi in windows
+  // while the first install is incomplete OR while SETUP_MODE is armed —
+  // an armed session must stay reachable until saved or disarmed, not
+  // vanish after one window (the stranded-operator bug: a provisioned node
+  // with a stale relay address and no way back into setup but a reflash).
+  assert(espnet::setupWindowReopens(false, false));  // factory / not provisioned: the #152 rule
+  assert(espnet::setupWindowReopens(false, true));   // saved but never connected, armed
+  assert(espnet::setupWindowReopens(true, true));    // armed maintenance: reopens until saved or disarmed
+  assert(!espnet::setupWindowReopens(true, false));  // provisioned, nobody armed: an outage just retries (#152)
 }
 
 // ── task #135: the setup form (SetupForm) ──
@@ -1049,8 +1059,11 @@ class FakeNet : public espnet::ISetupNet {
   }
   void poll() override { ++polls_; }
   void stop() override { ++stops_; up_ = false; }
+  // #160: the idle-aware window's busy signal — the test drives it directly.
+  int stationsConnected() const override { return stations_; }
   bool up_ = false;
   int startCalls_ = 0, polls_ = 0, stops_ = 0, failNext_ = 0;
+  int stations_ = 0;  // stations joined to the (fake) setup AP right now
   std::string lastSsid_, lastPassword_;
 };
 
@@ -1277,6 +1290,84 @@ static void testSetupSession() {
   assert(session3.step(100000 + 60000) == SetupStep::Handback);
   assert(!net3.up_ && net3.stops_ >= 1);
   assert(!session3.serving());
+}
+
+// ── task #160: the idle-aware window ──
+// A joined station is somebody mid-setup: the cap counts EMPTY time only, so
+// the portal can no longer shut down under an active session (the 60 s
+// window used to close mid-form, the phone fell back to its home WiFi and a
+// provisioned node never reopened the portal — the operator's only way back
+// was a reflash).
+
+static void testSetupSessionIdleWindow() {
+  using espnet::SetupSessionConfig;
+  using espnet::SetupStep;
+
+  RamStoreBackend backend;
+  espnet::WifiStore store;
+  store.begin(&backend);
+  espnet::WifiStoreNet none[1];
+  RamStoreBackend rbe; espnet::RelayConfigStore rs; rs.begin(&rbe);
+  espnet::SetupForm form("espnode-setup-aabbcc", store, none, 0, rs, espnet::RelayConfig(), kToken);
+  FakeLog log;
+  FakeNet net;
+  SetupSessionConfig cfg;
+  cfg.ssid = "espnode-setup-aabbcc";
+  cfg.password = ESPNET_SETUP_AP_PASSWORD;
+  cfg.serveCapMs = 60000;
+  espnet::SetupSession session(cfg, net, form, &log);
+
+  // the portal opens and an operator joins after 20 s: from then on the
+  // window HOLDS — far past the 60 s cap the session is still serving
+  assert(session.step(0) == SetupStep::Running);
+  assert(net.up_);
+  assert(session.step(20000) == SetupStep::Running);
+  net.stations_ = 1;
+  assert(session.step(20000 + 30000) == SetupStep::Running);
+  assert(session.step(20000 + 60000) == SetupStep::Running);  // the old code handed back here
+  assert(session.step(20000 + 600000) == SetupStep::Running); // ten minutes on the form: still up
+  assert(net.up_ && net.stops_ == 0);
+  bool held = false;
+  for (size_t i = 0; i < log.lines_.size(); ++i) {
+    if (log.lines_[i].find("a station joined") != std::string::npos) held = true;
+  }
+  assert(held);
+
+  // the operator leaves (the phone drops the AP): the idle clock runs from
+  // the LAST busy pass, and a full empty window hands back cleanly
+  net.stations_ = 0;
+  assert(session.step(620000 + 1000) == SetupStep::Running);  // just went empty: clock restarted
+  assert(session.step(620000 + 59999) == SetupStep::Running);
+  assert(session.step(620000 + 60000) == SetupStep::Handback);
+  assert(!net.up_ && net.stops_ >= 1);
+  bool empty = false;
+  for (size_t i = 0; i < log.lines_.size(); ++i) {
+    if (log.lines_[i].find("sat empty") != std::string::npos) empty = true;
+  }
+  assert(empty);
+
+  // a station that joins mid-window pushes the handback back again (the
+  // clock slides): empty 30 s, joined 10 s, empty again — the deadline is
+  // measured from the last busy pass, not from the window's start
+  FakeNet net5;
+  espnet::SetupSession session5(cfg, net5, form, &log);
+  assert(session5.step(500000) == SetupStep::Running);
+  net5.stations_ = 1;
+  assert(session5.step(500000 + 30000) == SetupStep::Running);  // busy: resets the clock
+  net5.stations_ = 0;
+  assert(session5.step(500000 + 30000 + 30000) == SetupStep::Running); // only 30 s empty
+  assert(session5.step(500000 + 30000 + 59999) == SetupStep::Running);
+  assert(session5.step(500000 + 30000 + 60000) == SetupStep::Handback);
+  assert(!net5.up_);
+
+  // serveCapMs = 0 is untouched: serve forever, stations or not
+  FakeNet net6;
+  SetupSessionConfig cfg6 = cfg;
+  cfg6.serveCapMs = 0;
+  espnet::SetupSession session6(cfg6, net6, form, &log);
+  assert(session6.step(0) == SetupStep::Running);
+  assert(session6.step(3600000) == SetupStep::Running);
+  assert(session6.step(7200000) == SetupStep::Running);
 }
 
 // ── task #135: the bounded request reader (HttpRequestReader) ──
@@ -1544,6 +1635,7 @@ int main() {
   testSetupSaveNarration();
   printf("PASS setup save narration (no secrets logged)\n");
   testSetupSession();
+  testSetupSessionIdleWindow();
   printf("PASS setup session\n");
   testHttpRequestReader();
   printf("PASS http request reader\n");

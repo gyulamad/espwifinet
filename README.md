@@ -68,8 +68,14 @@ Design decisions worth knowing (each documented in the code):
   SETUP_MODE maintenance switch). The setup WiFi opens exactly while the
   first install is not complete or setup is armed, and NEVER on a
   provisioned node in an outage: a WiFi outage retries, it does not open a
-  captive portal. The store is validated on every load; a damaged one reads
-  as "no credentials" (which means the portal, not garbage on the wire).
+  captive portal. A bounded window is idle-aware and reopens (task #160):
+  it holds while a station is joined (nobody's form session dies under a
+  countdown), it hands back only after sitting empty, and while SETUP_MODE
+  is armed the windows repeat — until the form saves (which disarms) or the
+  dashboard disarms, so a maintenance session can always be finished or
+  cancelled without a reflash. The store is validated on every load; a
+  damaged one reads as "no credentials" (which means the portal, not
+  garbage on the wire).
 - Every module keeps its decision logic in pure functions/classes and the
   IO in thin wrappers, which is what makes the relay unit-testable and the
   sketch desktop-testable without hardware.

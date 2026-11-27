@@ -847,6 +847,10 @@ struct ISetupNet {
   virtual bool startAccessPoint(const std::string& ssid, const std::string& password) = 0;
   virtual void poll() = 0;  // serve DNS + HTTP; never blocks for long
   virtual void stop() = 0;  // access point and servers off, WiFi left clean for the normal flow
+  // How many stations are joined to the setup WiFi right now (#160): the
+  // window's idle clock reads it every pass. A joined phone or laptop is
+  // somebody mid-setup — their session must not die under a countdown.
+  virtual int stationsConnected() const = 0;
 };
 
 enum class SetupStep { Running, Handback, Restart };
@@ -866,6 +870,17 @@ struct SetupSessionConfig {
 // bounds each window, and its expiry answers Handback so the sketch resumes
 // the normal scan/connect flow and the setup WiFi cannot take a working
 // node hostage when the outage was only temporary.
+//
+//   * The window is IDLE-AWARE (task #160): the cap counts the time the
+//     access point sat EMPTY, not the time since it opened. A joined phone
+//     or laptop keeps resetting the clock — somebody is standing there mid-
+//     setup, and killing their session under the countdown is what stranded
+//     the operator (the 60 s window shut the portal mid-form, the phone fell
+//     back to its home WiFi, and a provisioned node never reopened it: the
+//     only way back was a reflash). The sketch's reopen rule
+//     (setupWindowReopens below) is the other half: an armed or
+//     unprovisioned node keeps reopening windows, so handing back never
+//     loses the session for good.
 //
 //   * The access point fails to start: log, clean up, try again later. NEVER
 //     Handback in the factory case — a node with nothing to join must not
@@ -893,8 +908,24 @@ class SetupSession {
         state_ = State::Grace;
         return SetupStep::Running;
       }
+      // The idle-aware window (#160): a joined station is somebody mid-setup,
+      // so their presence resets the countdown — the portal never closes
+      // under an active session. The cap only bites after serveCapMs of an
+      // EMPTY access point (nobody joined at all), which is the "nobody
+      // came" case the handback exists for: the saved credentials get their
+      // try, and the sketch reopens the window if the node still needs setup.
+      const bool operatorPresent = net_.stationsConnected() > 0;
+      if (operatorPresent) {
+        if (!wasOccupied_) {
+          say("setup: a station joined - the window holds while the setup WiFi is in use");
+          wasOccupied_ = true;
+        }
+        servingSinceMs_ = nowMs;
+      } else {
+        wasOccupied_ = false;
+      }
       if (cfg_.serveCapMs != 0 && static_cast<uint32_t>(nowMs - servingSinceMs_) >= cfg_.serveCapMs) {
-        say("setup: nobody came, closing the setup WiFi for a while");
+        say("setup: the setup WiFi sat empty, closing it for a while (it reopens if the node still needs setup)");
         stop();
         state_ = State::Done;
         return SetupStep::Handback;
@@ -958,6 +989,7 @@ class SetupSession {
   State state_ = State::Starting;
   uint32_t mark_ = 0;
   uint32_t servingSinceMs_ = 0;
+  bool wasOccupied_ = false;  // last pass had a station joined: the "station joined" line prints once per visit
   bool touched_ = false;
 };
 
@@ -1157,8 +1189,25 @@ inline PortalDecision bootPortalDecision(bool setupArmed, int usableNetworks, bo
 // and a forever-portal would capture the node so the saved network is never
 // even tried — the exact "save and nothing happens" the bounded window
 // exists to prevent. The sketch passes its SETUP_SERVE_MAX_MS as `boundedMs`.
+// Since task #160 the cap counts EMPTY time: a joined station keeps resetting
+// it (see SetupSession), so the bounded window no longer shuts the portal
+// while somebody is standing at the form.
 inline uint32_t bootPortalServeCapMs(bool factoryEmpty, uint32_t boundedMs) {
   return factoryEmpty ? 0 : boundedMs;
+}
+
+// Whether the sketch reopens the setup WiFi in bounded windows after a
+// handback (task #152, widened by task #160). It reopens while the first
+// install is still incomplete (the saved credentials have never connected:
+// a wrong password must stay fixable from the phone) — and while SETUP_MODE
+// is armed, because the operator explicitly asked for a setup session: the
+// window alternating with the normal flow is what keeps that session
+// reachable until it is saved (the save disarms) or disarmed from the
+// dashboard, instead of vanishing after one cap and leaving a provisioned
+// node with no way into setup but a reflash. A provisioned node that nobody
+// armed never reopens: its outage just retries (#152).
+inline bool setupWindowReopens(bool provisioned, bool setupArmed) {
+  return !provisioned || setupArmed;
 }
 
 } // namespace espnet
