@@ -120,6 +120,22 @@ if [ "$BOARD" = esp32 ]; then
   esac
 fi
 
+# ── python parse noise from the core's own tools (#173 round 2) ────────────
+# The esp8266 core's bundled tools (elf2bin.py, the upload wrapper) and
+# esptool itself are python. python 3.12+ parses the core's legacy source
+# with a SyntaxWarning per invalid escape sequence (esp8266 core 3.1.2's
+# elf2bin.py prints "invalid escape sequence '\\s'" twice per compile) —
+# core-side noise a file inside this repo cannot fix at the source (it lives
+# in ~/.arduino15). The warnings carry nothing the flash flow can act on, so
+# every toolchain invocation below runs with PYTHONWARNINGS=ignore::SyntaxWarning:
+# ONLY that class is silenced, and ONLY inside these calls — a SyntaxWarning
+# from any other python on the machine, a DeprecationWarning, or any real
+# error still prints. esptool's own "WARNING: DEPRECATED" log lines are plain
+# text, not warnings-module output, so they are untouched (the v1 fix keeps
+# handling those). An inherited PYTHONWARNINGS of the caller is deliberately
+# overridden for exactly these invocations.
+PYW="PYTHONWARNINGS=ignore::SyntaxWarning"
+
 # ── esptool helpers (tasks #173, #174 follow-up) ───────────────────────────────────
 # the modern binary name first (esptool.py is deprecated since v5; every pip
 # install ships both entry points), the old one as the fallback
@@ -132,7 +148,7 @@ find_esptool() {
 # the tool's major version from the first line of `<tool> version`
 # ('esptool v5.4.0' / 'esptool.py v3.0'); empty when it cannot be read
 esptool_major() {
-  "$1" version 2>/dev/null | head -n 1 | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\..*/\1/p'
+  env "$PYW" "$1" version 2>/dev/null | head -n 1 | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\..*/\1/p'
 }
 
 # v4+ spells its commands with dashes (the underscore form only warns there);
@@ -153,7 +169,7 @@ detect_flash_size() { # <port>
   local tool cmd
   tool="$(find_esptool)" || return 1
   cmd="$(esptool_command "$tool" flash id)"
-  "$tool" --port "$1" "$cmd" 2>&1 | sed -n 's/^Detected flash size: *//p' | head -n 1 | tr -d '\r '
+  env "$PYW" "$tool" --port "$1" "$cmd" 2>&1 | sed -n 's/^Detected flash size: *//p' | head -n 1 | tr -d '\r '
 }
 
 # esptool's size words -> the esp8266 core's eesz menu value (generic board)
@@ -209,12 +225,12 @@ if [ "$ERASE" = 1 ]; then
   ERASE_CMD="$(esptool_command "$ESPTOOL" erase flash)"
   say "ERASING the flash on $PORT - the node forgets its WiFi list, relay address +"
   say "fleet key and both life-cycle flags; the dashboard's history for the device stays"
-  "$ESPTOOL" --port "$PORT" "$ERASE_CMD" || die "$ERASE_CMD failed"
+  env "$PYW" "$ESPTOOL" --port "$PORT" "$ERASE_CMD" || die "$ERASE_CMD failed"
 fi
 
 # ── compile + upload ─────────────────────────────────────────────────────
 say "compiling for $FQBN"
-arduino-cli compile --fqbn "$FQBN" --output-dir "$BUILD_DIR" arduino/ESP_node || die "compile failed"
+env "$PYW" arduino-cli compile --fqbn "$FQBN" --output-dir "$BUILD_DIR" arduino/ESP_node || die "compile failed"
 BIN="$BUILD_DIR/ESP_node.ino.bin"
 [ -f "$BIN" ] || die "the build did not produce $BIN"
 say "uploading $(wc -c < "$BIN" | tr -d ' ') bytes to $PORT"
@@ -225,7 +241,7 @@ say "uploading $(wc -c < "$BIN" | tr -d ' ') bytes to $PORT"
 # (the esp8266 core's upload wrapper swallows it).
 upload_once() {
   local rc
-  arduino-cli upload --fqbn "$FQBN" -p "$PORT" --input-dir "$BUILD_DIR" arduino/ESP_node 2>&1 | tee "$UPLOAD_LOG"
+  env "$PYW" arduino-cli upload --fqbn "$FQBN" -p "$PORT" --input-dir "$BUILD_DIR" arduino/ESP_node 2>&1 | tee "$UPLOAD_LOG"
   rc="${PIPESTATUS[0]}"
   [ "$rc" -eq 0 ] || return 1
   grep -Eq "$ESPTOOL_FATAL_RE" "$UPLOAD_LOG" && return 2

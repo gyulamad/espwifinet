@@ -43,6 +43,17 @@
 #   scenario 22: FQBN_ESP8266 set by the caller wins, the chip is never asked;
 #   scenario 23: --board esp32 never asks esptool for a flash size;
 #   scenario 24: UPLOAD_ATTEMPTS overrides the default of 5.
+#   python parse noise stays scoped (#173 round 2): the esp8266 core's bundled
+#   elf2bin.py is python, python 3.12+ parses its legacy escapes with a
+#   SyntaxWarning, so the script runs every toolchain call with
+#   PYTHONWARNINGS=ignore::SyntaxWarning — the stubs record the env they
+#   received, so the assertion is on the real wiring:
+#   scenario 25: compile AND upload carry the scoped suppression, nothing else;
+#   scenario 26: an --erase flow scopes every esptool call (version, flash id,
+#                erase) plus compile and upload;
+#   scenario 27: the mechanism itself on the REAL python of this machine —
+#                the env silences exactly the SyntaxWarning class (skips
+#                cleanly on hosts whose python does not emit it).
 
 set -u
 
@@ -87,9 +98,13 @@ case "$cmd" in
     esac ;;
   compile)
     echo "compile $*" >> "$STUB_LOG"
+    # #173 v2: record the env the script handed us, so the suite can assert
+    # the scoped PYTHONWARNINGS wiring without grepping the script's source
+    [ -n "${STUB_ENV:-}" ] && printf '%s\n' "${PYTHONWARNINGS:-}" >> "$STUB_ENV"
     mkdir -p build && : > build/ESP_node.ino.bin ;;
   upload)
     echo "upload $*" >> "$STUB_LOG"
+    [ -n "${STUB_ENV:-}" ] && printf '%s\n' "${PYTHONWARNINGS:-}" >> "$STUB_ENV"
     n=$(( $(cat "$STUB_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_COUNT"
     # task #174: the esp8266 core's upload.py prints the fatal and exits 0
     case "${STUB_UPLOAD:-ok}" in
@@ -111,6 +126,7 @@ chmod +x "$tmp/bin/arduino-cli"
 mkdir -p "$tmp/bin-modern" "$tmp/bin-py" "$tmp/sysbin"
 cat > "$tmp/bin-modern/esptool" <<'STUB'
 #!/usr/bin/env bash
+[ -n "${STUB_ENV:-}" ] && printf '%s\n' "${PYTHONWARNINGS:-}" >> "$STUB_ENV"
 if [ "${1:-}" = version ]; then printf '%s\n' "${STUB_ESPTOOL_VERSION:-}"; exit 0; fi
 echo "$(basename "$0") $*" >> "$STUB_LOG"
 case "${3:-}" in
@@ -132,8 +148,8 @@ HERMETIC_BASE="$tmp/bin:$tmp/sysbin"
 
 run_flash() { # <board-list-fixture|-> [extra args...]
   local fixture="$1"; shift
-  : > "$tmp/stub.log"; rm -f "$tmp/upload.count"
-  STUB_BOARD_LIST="$fixture" STUB_LOG="$tmp/stub.log" STUB_CORE_LIST="${STUB_CORE_LIST:-}" \
+  : > "$tmp/stub.log"; : > "$tmp/env.log"; rm -f "$tmp/upload.count"
+  STUB_BOARD_LIST="$fixture" STUB_LOG="$tmp/stub.log" STUB_ENV="$tmp/env.log" STUB_CORE_LIST="${STUB_CORE_LIST:-}" \
     STUB_COUNT="$tmp/upload.count" UPLOAD_RETRY_DELAY=0 \
     PATH="${STUB_BIN_PATH:-$HERMETIC_BASE}" bash "$tmp/node/flash-node.sh" "$@" > "$tmp/out.txt" 2> "$tmp/err.txt"
 }
@@ -374,6 +390,63 @@ fi
 
 # ── scenario 24: UPLOAD_ATTEMPTS overrides the default of 5 ──
 UPLOAD_ATTEMPTS=2 upload_case "UPLOAD_ATTEMPTS=2 caps the retries" fatal-esp8266 1 2 'upload did NOT stick'
+
+# ── scenarios 25-27: the core's python parse noise stays scoped (#173 v2) ──
+
+# scenario 25: the plain --port flow — compile AND upload carry the scoped
+# suppression, and NOTHING else records an unscoped line
+run_flash unknown-tabs --port /dev/null
+rc=$?
+n_lines="$(grep -c . "$tmp/env.log")"
+unscoped="$(grep -cv 'ignore::SyntaxWarning' "$tmp/env.log")"
+if [ "$rc" -eq 0 ] && [ "$n_lines" -eq 2 ] && [ "$unscoped" -eq 0 ]; then
+  echo "[PASS] scoped SyntaxWarning suppression rides exactly compile and upload"
+else
+  echo "[FAIL] scoped SyntaxWarning suppression: $n_lines env lines, $unscoped unscoped (exit $rc); env log:"
+  cat "$tmp/env.log"; fail=1
+fi
+
+# scenario 26: an --erase flow WITH chip detection (no explicit FQBN) — every
+# esptool call (version x2 for the command spellings, flash id, erase) is
+# scoped too, so no esptool/python warning can leak into the log
+STUB_BIN_PATH="$tmp/bin-modern:$HERMETIC_BASE" \
+  STUB_ESPTOOL_VERSION="esptool v5.4.0" STUB_FLASH_SIZE="1MB" \
+  run_flash unknown-tabs --port /dev/null --erase
+rc=$?
+n_lines="$(grep -c . "$tmp/env.log")"
+unscoped="$(grep -cv 'ignore::SyntaxWarning' "$tmp/env.log")"
+if [ "$rc" -eq 0 ] && [ "$n_lines" -ge 5 ] && [ "$unscoped" -eq 0 ]; then
+  echo "[PASS] --erase flow: all $n_lines toolchain calls (esptool version/flash-id/erase + compile + upload) carry the scoped suppression"
+else
+  echo "[FAIL] --erase flow env scoping: $n_lines env lines, $unscoped unscoped (exit $rc); env log:"
+  cat "$tmp/env.log"; cat "$tmp/stub.log"; fail=1
+fi
+
+# scenario 27: the mechanism itself, against the REAL python of this machine:
+# a legacy escape sequence warns at parse time (python 3.12+: SyntaxWarning —
+# exactly what the tester's esp8266 core 3.1.2 elf2bin.py printed) and the
+# scoped env silences exactly that class. Skips cleanly when this host's
+# python does not emit the class (older pythons warn as DeprecationWarning,
+# a different class the script deliberately does not touch).
+if command -v python3 >/dev/null 2>&1; then
+  cat > "$tmp/escape_demo.py" <<'PYEOF'
+import re
+words = re.split('\s+', line)
+PYEOF
+  plain="$(python3 "$tmp/escape_demo.py" 2>&1 >/dev/null)"
+  if printf '%s' "$plain" | grep -q 'SyntaxWarning'; then
+    scoped="$(PYTHONWARNINGS='ignore::SyntaxWarning' python3 "$tmp/escape_demo.py" 2>&1 >/dev/null)"
+    if printf '%s' "$scoped" | grep -q 'SyntaxWarning'; then
+      echo "[FAIL] real python: the scoped env did NOT silence the SyntaxWarning"; printf '%s\n' "$scoped"; fail=1
+    else
+      echo "[PASS] real python: PYTHONWARNINGS=ignore::SyntaxWarning silences the parse-time SyntaxWarning class"
+    fi
+  else
+    echo "[PASS] real python: this host's python does not emit SyntaxWarning for legacy escapes - wiring pinned by the stub scenarios"
+  fi
+else
+  echo "[PASS] real python: python3 not available - wiring pinned by the stub scenarios"
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "flash-node.sh port detection: ALL PASSED"
