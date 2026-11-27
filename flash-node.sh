@@ -20,13 +20,25 @@
 # node's WiFi list and its relay address + fleet key are typed on the node's
 # own setup WiFi page after this flash (INSTALL.md section 4).
 #
-# --erase runs `esptool.py --port <port> erase_flash` BEFORE the upload: the
+# --erase runs `esptool --port <port> erase-flash` BEFORE the upload: the
 # flash store survives ordinary reflashes BY DESIGN, so a factory reset is a
 # deliberate step (it clears the WiFi list, the relay address + fleet key and
 # both life-cycle flags; the dashboard's history for the device id stays).
+# The script prefers the modern `esptool` binary (esptool.py is deprecated
+# since v5) and spells the command the way the installed version wants it
+# (erase-flash from v4 on, erase_flash for v3 / unknown), so no deprecation
+# warning is printed (task #173).
+#
+# The upload is VERIFIED (task #174): the esp8266 core's upload wrapper prints
+# esptool's fatal error and still exits 0, so the toolchain output is scanned
+# for it. A failed write is retried (the first upload right after an erase is
+# the fragile one) and, if it never sticks, the script FAILS instead of
+# printing "flashed." for a half-written node.
 #
 # Settings (environment variables):
 #   FQBN_ESP8266 / FQBN_ESP32   override the board identifiers
+#   UPLOAD_ATTEMPTS             upload tries before giving up (default 3)
+#   UPLOAD_RETRY_DELAY          seconds between tries (default 2)
 #
 # Exit code: 0 flashed, 1 failed, 2 wrong usage.
 set -u
@@ -36,6 +48,11 @@ cd "$(dirname "$0")" || exit 1
 FQBN_ESP8266="${FQBN_ESP8266:-esp8266:esp8266:nodemcuv2}"
 FQBN_ESP32="${FQBN_ESP32:-esp32:esp32:esp32}"
 BUILD_DIR="./build"
+UPLOAD_ATTEMPTS="${UPLOAD_ATTEMPTS:-3}"
+UPLOAD_RETRY_DELAY="${UPLOAD_RETRY_DELAY:-2}"
+# esptool's own fatal line: 'A fatal esptool.py error occurred' (esptool 3.x,
+# the esp8266 core's bundled one) / 'A fatal error occurred' (v4+, esp32 path)
+ESPTOOL_FATAL_RE='A fatal (esptool\.py )?error occurred'
 
 usage() { sed -n '2,/^set -u/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
@@ -56,6 +73,13 @@ done
 
 say() { echo "flash-node: $*"; }
 die() { echo "flash-node: FAILED: $*" >&2; exit 1; }
+
+case "$UPLOAD_ATTEMPTS" in
+  ''|*[!0-9]*|0) echo "flash-node: UPLOAD_ATTEMPTS must be a positive number (got: $UPLOAD_ATTEMPTS)" >&2; exit 2 ;;
+esac
+case "$UPLOAD_RETRY_DELAY" in
+  ''|*[!0-9]*) echo "flash-node: UPLOAD_RETRY_DELAY must be whole seconds (got: $UPLOAD_RETRY_DELAY)" >&2; exit 2 ;;
+esac
 
 case "$BOARD" in
   esp8266) FQBN="$FQBN_ESP8266" ;;
@@ -97,15 +121,38 @@ fi
 say "board: $BOARD ($FQBN), port: $PORT"
 
 # ── optional factory reset ───────────────────────────────────────────────
+# the modern binary name first (esptool.py is deprecated since v5; every pip
+# install ships both entry points), the old one as the fallback
+find_esptool() {
+  command -v esptool >/dev/null 2>&1 && { echo esptool; return 0; }
+  command -v esptool.py >/dev/null 2>&1 && { echo esptool.py; return 0; }
+  return 1
+}
+
+# the tool's major version from the first line of `<tool> version`
+# ('esptool v5.4.0' / 'esptool.py v3.0'); empty when it cannot be read
+esptool_major() {
+  "$1" version 2>/dev/null | head -n 1 | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\..*/\1/p'
+}
+
+# v4+ spells the command erase-flash (the underscore form only warns there);
+# v3 and an unreadable version keep erase_flash, which every version accepts
+erase_command() {
+  local major
+  major="$(esptool_major "$1")"
+  case "$major" in
+    ''|*[!0-9]*) echo erase_flash; return ;;
+  esac
+  [ "$major" -ge 4 ] || { echo erase_flash; return; }
+  echo erase-flash
+}
+
 if [ "$ERASE" = 1 ]; then
-  command -v esptool.py >/dev/null 2>&1 || command -v esptool >/dev/null 2>&1 || die "--erase needs esptool.py (pip install esptool)"
+  ESPTOOL="$(find_esptool)" || die "--erase needs esptool (pip install esptool)"
+  ERASE_CMD="$(erase_command "$ESPTOOL")"
   say "ERASING the flash on $PORT - the node forgets its WiFi list, relay address +"
   say "fleet key and both life-cycle flags; the dashboard's history for the device stays"
-  if command -v esptool.py >/dev/null 2>&1; then
-    esptool.py --port "$PORT" erase_flash || die "erase_flash failed"
-  else
-    esptool --port "$PORT" erase_flash || die "erase_flash failed"
-  fi
+  "$ESPTOOL" --port "$PORT" "$ERASE_CMD" || die "$ERASE_CMD failed"
 fi
 
 # ── compile + upload ─────────────────────────────────────────────────────
@@ -114,7 +161,33 @@ arduino-cli compile --fqbn "$FQBN" --output-dir "$BUILD_DIR" arduino/ESP_node ||
 BIN="$BUILD_DIR/ESP_node.ino.bin"
 [ -f "$BIN" ] || die "the build did not produce $BIN"
 say "uploading $(wc -c < "$BIN" | tr -d ' ') bytes to $PORT"
-arduino-cli upload --fqbn "$FQBN" -p "$PORT" --input-dir "$BUILD_DIR" arduino/ESP_node || die "upload failed"
+# ── verified upload (task #174) ──────────────────────────────────────────
+# one attempt, its toolchain output kept in $UPLOAD_LOG while it still reaches
+# the terminal. Returns 0 = stuck, 1 = arduino-cli itself failed (exit status),
+# 2 = esptool's fatal error is in the output although the exit status said 0
+# (the esp8266 core's upload wrapper swallows it).
+upload_once() {
+  local rc
+  arduino-cli upload --fqbn "$FQBN" -p "$PORT" --input-dir "$BUILD_DIR" arduino/ESP_node 2>&1 | tee "$UPLOAD_LOG"
+  rc="${PIPESTATUS[0]}"
+  [ "$rc" -eq 0 ] || return 1
+  grep -Eq "$ESPTOOL_FATAL_RE" "$UPLOAD_LOG" && return 2
+  return 0
+}
+
+UPLOAD_LOG="$(mktemp "${TMPDIR:-/tmp}/flash-node-upload.XXXXXX")" || die "cannot create a temporary file for the upload output"
+attempt=1
+while :; do
+  upload_once
+  status=$?
+  [ "$status" -eq 0 ] && break
+  [ "$status" -eq 1 ] && die "upload failed (arduino-cli's own failure; its output is kept in $UPLOAD_LOG)"
+  [ "$attempt" -lt "$UPLOAD_ATTEMPTS" ] || die "the upload did NOT stick: esptool reported a fatal error on all $UPLOAD_ATTEMPTS attempts although arduino-cli exited 0 (the esp8266 core's upload wrapper swallows it). The node is NOT flashed (empty after --erase) - check the cable/port and re-run the same command; the erase need not be repeated. Toolchain output: $UPLOAD_LOG"
+  say "esptool aborted mid-upload (attempt $attempt of $UPLOAD_ATTEMPTS) - the flash is not written, retrying"
+  attempt=$((attempt + 1))
+  sleep "$UPLOAD_RETRY_DELAY"
+done
+rm -f "$UPLOAD_LOG"
 
 echo
 say "flashed. next: power the node, join its WiFi 'espnode-setup-xxxxxx'"

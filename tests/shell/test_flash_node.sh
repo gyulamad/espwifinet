@@ -19,6 +19,19 @@
 #               4096-byte EEPROM blob, so every save would fail; nothing may
 #               be compiled;
 #   scenario 7: --board esp32 on a 2.x+ core -> the flow runs.
+#   --erase (task #173): the esptool binary/command spelling follows the
+#   installed esptool, so no deprecation warning is ever provoked:
+#   scenario 8:  esptool v5 -> `esptool ... erase-flash` (no .py, no underscore);
+#   scenario 9:  py-only install, bundled v3 version line -> `esptool.py ... erase_flash`;
+#   scenario 10: the v4 boundary -> erase-flash;
+#   scenario 11: unparseable version line -> erase_flash (widest-compatible);
+#   scenario 12: no esptool at all -> refused with the pip hint, nothing compiled.
+#   verified upload (task #174): the esp8266 core's upload wrapper prints
+#   esptool's fatal error and still exits 0:
+#   scenario 13: fatal on every attempt (esp8266 wording) -> FAILS, never "flashed.";
+#   scenario 14: the same with the v4+/esp32 wording;
+#   scenario 15: fatal once, then a clean upload -> retried and flashed;
+#   scenario 16: arduino-cli's own non-zero exit -> dies at once, no retry.
 
 set -u
 
@@ -65,7 +78,15 @@ case "$cmd" in
     echo "compile $*" >> "$STUB_LOG"
     mkdir -p build && : > build/ESP_node.ino.bin ;;
   upload)
-    echo "upload $*" >> "$STUB_LOG" ;;
+    echo "upload $*" >> "$STUB_LOG"
+    n=$(( $(cat "$STUB_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_COUNT"
+    # task #174: the esp8266 core's upload.py prints the fatal and exits 0
+    case "${STUB_UPLOAD:-ok}" in
+      fatal-esp8266) echo 'A fatal esptool.py error occurred: Invalid head of packet (0x46)' >&2 ;;
+      fatal-esp32)   echo 'A fatal error occurred: Failed to connect to ESP32' >&2 ;;
+      fatal-once)    [ "$n" -eq 1 ] && echo 'A fatal esptool.py error occurred: Invalid head of packet (0x46)' >&2 ;;
+      fail)          echo 'Error during upload: uploading error' >&2; exit 1 ;;
+    esac ;;
   core)
     # task #171: flash-node.sh checks the installed esp32 core's version
     printf '%s\n' "${STUB_CORE_LIST:-}" ;;
@@ -74,11 +95,31 @@ exit 0
 STUB
 chmod +x "$tmp/bin/arduino-cli"
 
+# esptool stubs (task #173): the version line comes from $STUB_ESPTOOL_VERSION,
+# every other call is logged verbatim under the name it was invoked by
+mkdir -p "$tmp/bin-modern" "$tmp/bin-py" "$tmp/sysbin"
+cat > "$tmp/bin-modern/esptool" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then printf '%s\n' "${STUB_ESPTOOL_VERSION:-}"; exit 0; fi
+echo "$(basename "$0") $*" >> "$STUB_LOG"
+STUB
+chmod +x "$tmp/bin-modern/esptool"
+cp "$tmp/bin-modern/esptool" "$tmp/bin-modern/esptool.py"
+cp "$tmp/bin-modern/esptool" "$tmp/bin-py/esptool.py"
+
+# a PATH of its own: the host's real esptool (or any other) must never leak
+# into a scenario - the suite tests the stubs, not the host toolchain
+for t in env bash sed grep awk tee wc tr head cat mktemp rm sleep dirname basename mkdir; do
+  src="$(command -v "$t" 2>/dev/null)" && ln -sf "$src" "$tmp/sysbin/$t"
+done
+HERMETIC_BASE="$tmp/bin:$tmp/sysbin"
+
 run_flash() { # <board-list-fixture|-> [extra args...]
   local fixture="$1"; shift
-  : > "$tmp/stub.log"
+  : > "$tmp/stub.log"; rm -f "$tmp/upload.count"
   STUB_BOARD_LIST="$fixture" STUB_LOG="$tmp/stub.log" STUB_CORE_LIST="${STUB_CORE_LIST:-}" \
-    PATH="$tmp/bin:$PATH" bash "$tmp/node/flash-node.sh" "$@" > "$tmp/out.txt" 2> "$tmp/err.txt"
+    STUB_COUNT="$tmp/upload.count" UPLOAD_RETRY_DELAY=0 \
+    PATH="${STUB_BIN_PATH:-$tmp/bin:$PATH}" bash "$tmp/node/flash-node.sh" "$@" > "$tmp/out.txt" 2> "$tmp/err.txt"
 }
 
 # ── scenario 1: the tester's exact Unknown-type table (tabs) ──
@@ -168,6 +209,68 @@ else
   echo "[FAIL] esp32 core 2.x: exit $rc, stub log:"; cat "$tmp/stub.log" 2>/dev/null
   fail=1
 fi
+
+# ── scenarios 8-12: --erase picks the tool and command spelling (task #173) ──
+erase_case() { # <label> <bin-dir> <version line> <expected first stub-log line>
+  local label="$1" bindir="$2" ver="$3" want="$4" first
+  STUB_BIN_PATH="$bindir:$HERMETIC_BASE" STUB_ESPTOOL_VERSION="$ver" \
+    run_flash unknown-tabs --port /dev/null --erase
+  rc=$?
+  first="$(sed -n 1p "$tmp/stub.log")"
+  if [ "$rc" -eq 0 ] && [ "$first" = "$want" ] \
+     && [ "$(grep -c '^esptool' "$tmp/stub.log")" -eq 1 ] \
+     && grep -q '^compile ' "$tmp/stub.log" && grep -q '^upload ' "$tmp/stub.log"; then
+    echo "[PASS] --erase $label: '$want', then compile + upload"
+  else
+    echo "[FAIL] --erase $label: exit $rc, expected first call '$want'; stub log:"
+    cat "$tmp/stub.log"; cat "$tmp/err.txt"
+    fail=1
+  fi
+}
+erase_case "esptool v5" "$tmp/bin-modern" "esptool v5.4.0" "esptool --port /dev/null erase-flash"
+erase_case "py-only install, bundled v3" "$tmp/bin-py" "esptool.py v3.0" "esptool.py --port /dev/null erase_flash"
+erase_case "v4 boundary" "$tmp/bin-modern" "esptool.py v4.0" "esptool --port /dev/null erase-flash"
+erase_case "unparseable version line" "$tmp/bin-modern" "no idea what this is" "esptool --port /dev/null erase_flash"
+
+STUB_BIN_PATH="$HERMETIC_BASE" run_flash unknown-tabs --port /dev/null --erase
+rc=$?
+out="$(cat "$tmp/out.txt" "$tmp/err.txt")"
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q -- '--erase needs esptool (pip install esptool)' \
+   && [ ! -s "$tmp/stub.log" ]; then
+  echo "[PASS] --erase without esptool: refused with the pip hint, nothing compiled"
+else
+  echo "[FAIL] --erase without esptool: exit $rc; output:"; printf '%s\n' "$out"; cat "$tmp/stub.log"
+  fail=1
+fi
+
+# ── scenarios 13-16: the upload is verified, not trusted (task #174) ──
+upload_case() { # <label> <STUB_UPLOAD> <expected rc> <expected upload count> <must match> <board args...>
+  local label="$1" mode="$2" wantrc="$3" wantn="$4" must="$5"; shift 5
+  STUB_UPLOAD="$mode" run_flash unknown-tabs --port /dev/null "$@"
+  rc=$?
+  local out n ok=1
+  out="$(cat "$tmp/out.txt" "$tmp/err.txt")"
+  n="$(grep -c '^upload ' "$tmp/stub.log")"
+  [ "$rc" -eq "$wantrc" ] || ok=0
+  [ "$n" -eq "$wantn" ] || ok=0
+  printf '%s' "$out" | grep -q -- "$must" || ok=0
+  if [ "$wantrc" -ne 0 ]; then
+    printf '%s' "$out" | grep -q 'flashed. next:' && ok=0
+  else
+    printf '%s' "$out" | grep -q 'flashed. next:' || ok=0
+  fi
+  if [ "$ok" -eq 1 ]; then
+    echo "[PASS] $label: exit $rc after $n upload attempt(s)"
+  else
+    echo "[FAIL] $label: exit $rc (want $wantrc), $n attempt(s) (want $wantn), expected '$must'; output:"
+    printf '%s\n' "$out"
+    fail=1
+  fi
+}
+upload_case "swallowed esptool fatal (esp8266 wording) on every attempt" fatal-esp8266 1 3 'upload did NOT stick'
+upload_case "swallowed esptool fatal (esp32 wording) on every attempt" fatal-esp32 1 3 'upload did NOT stick' --board esp32
+upload_case "fatal once, then a clean upload: retried and flashed" fatal-once 0 2 'retrying'
+upload_case "arduino-cli's own failure: dies at once, no retry" fail 1 1 'upload failed'
 
 if [ "$fail" -eq 0 ]; then
   echo "flash-node.sh port detection: ALL PASSED"

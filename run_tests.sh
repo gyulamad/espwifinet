@@ -105,7 +105,7 @@ done
 # answered "no board found". tests/shell/test_flash_node.sh drives the real
 # script against a stub arduino-cli serving exactly those tables.
 echo ""
-echo "── flash-node.sh port detection (#165) ──"
+echo "── flash-node.sh port detection, erase names, verified upload (#165, #173, #174) ──"
 bash tests/shell/test_flash_node.sh || fail=1
 
 # #171: the setup form's browser script (Show/Hide toggles, row add/remove)

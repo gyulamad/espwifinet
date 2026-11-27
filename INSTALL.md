@@ -231,7 +231,7 @@ factory state (credentials you can no longer fix from the dashboard, a
 store you suspect is corrupted, or a node moving to a new site):
 
 ```bash
-esptool.py --port /dev/ttyUSB0 erase_flash
+esptool --port /dev/ttyUSB0 erase-flash   # esptool v3 or older: esptool.py --port /dev/ttyUSB0 erase_flash
 ```
 
 then upload the sketch again (the commands above) — the node boots blank,
