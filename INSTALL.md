@@ -33,6 +33,29 @@ Directory layout:
 
 ---
 
+## 0. The scripts at a glance (automated install)
+
+Every manual walk-through below has a script that automates it — run each
+from the repository root:
+
+| script | automates | what it does |
+| --- | --- | --- |
+| `./install-relay.sh` | section 1 | copies the relay code into /opt/espwifinet/esp-relay, generates config.js with two fresh keys (printed once), installs and starts the systemd service, health-checks it, opens the firewall ports |
+| `./install-dash.sh` | section 2 | installs php + php-curl when missing (skip with NO_APT=1), copies php/espdash into /var/www/html/espdash with correct file modes, hands the folder to the web server user |
+| `./flash-node.sh [--board esp8266\|esp32] [--port P] [--erase]` | section 3 | detects the node's serial port, compiles the sketch and uploads it; `--erase` factory-resets the node first |
+| `./ota-deploy.sh [esp8266\|esp32\|all] [--version V] [--wait SECS]` | section 5, steps 1-2 | compiles, verifies the image, publishes it to the relay's firmware API; `--wait` polls until every online node runs the release |
+
+A re-run never destroys settings: an existing relay `config.js` and an
+existing dashboard `config.php` are left untouched, so a re-run is an
+update.
+
+**Branch note:** the scripts and this automation live on the **develop**
+branch. Check out develop — or select develop in GitHub's branch picker —
+before looking for them; the repository's default branch can lag behind
+develop and does not carry them yet.
+
+---
+
 ## 1. Install the relay (Raspberry Pi)
 
 **This section, step by step, is automated by `./install-relay.sh`** (task
