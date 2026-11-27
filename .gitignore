@@ -9,3 +9,4 @@ firmware/*.old
 npm-debug.log*
 ota.conf
 build/
+core
