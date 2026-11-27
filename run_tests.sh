@@ -123,6 +123,12 @@ if command -v node >/dev/null 2>&1; then
     new Function(m[1]);
     console.log("setup.js parses clean (" + m[1].length + " bytes)");
   ' || fail=1
+  # #177: parsing clean is not behaving right — the Add button builds rows
+  # with cloneNode(true), which copies the wrapper but NOT the click
+  # listener, so an added row's Show button was dead (#171 regression).
+  # tests/js/test_setup_form.js drives the REAL extracted script against a
+  # minimal DOM stub and clicks every button, born and added alike.
+  node tests/js/test_setup_form.js || fail=1
 else
   echo "node not found, skipping"
 fi

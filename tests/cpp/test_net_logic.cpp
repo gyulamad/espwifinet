@@ -842,6 +842,13 @@ static void testSetupForm() {
          js.body.find("input.open") != std::string::npos); // class-based renumber
   assert(js.body.find("input[type=text]") == std::string::npos); // no type-based selector left
   assert(js.body.find("resetToggle") != std::string::npos); // an added row starts hidden again
+  // #177: the clone's Show button must be RE-BOUND in the Add handler —
+  // cloneNode(true) copies the wrapper and the button but never the
+  // addEventListener listener, so only the re-bind call makes an added row
+  // toggleable. (The behavioral proof lives in tests/js/test_setup_form.js,
+  // which drives the real extracted script against a DOM stub.)
+  assert(js.body.find("function bindToggle") != std::string::npos);
+  assert(js.body.find("bindToggle(pw,") != std::string::npos); // the clone re-bind, not only the load-time bind
   bool jsHeaders = false;
   for (size_t i = 0; i < js.headers.size(); ++i) {
     if (js.headers[i].first == "Cache-Control" && js.headers[i].second == "no-store") jsHeaders = true;

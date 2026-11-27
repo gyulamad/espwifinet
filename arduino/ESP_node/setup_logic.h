@@ -290,6 +290,11 @@ inline void addSecurityHeaders(HttpReply& r, bool html) {
 //    tolerates gaps, but sequential keeps the error messages readable. The
 //    hard cap mirrors WIFI_STORE_MAX_NETS: the node's flash sector is the
 //    physical limit.
+//  * #177: the clone's Show button is RE-BOUND in the Add handler —
+//    cloneNode(true) copies the wrapper and the button but never an
+//    addEventListener listener, so without the re-bind every added row
+//    carried a dead Show button and only the rows the page was born with
+//    could reveal their box.
 inline const char* setupFormJavaScript() {
   return R"js((function(){
   var fieldset = document.querySelector('fieldset');
@@ -316,6 +321,19 @@ inline const char* setupFormJavaScript() {
     }
   }
   // #171: wrap every password box with a Show/Hide toggle button.
+  // #177: the click handler lives in bindToggle, not inline in addToggle —
+  // the Add button builds new rows with cloneNode(true), which copies the
+  // wrapper and the button but NOT the listener. bindToggle is what loads
+  // the born rows AND what re-attaches the handler to a clone's button.
+  function bindToggle(input, btn) {
+    if (!btn) return; // a clone without its button must not break the form
+    btn.addEventListener('click', function () {
+      var show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.textContent = show ? 'Hide' : 'Show';
+      btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+    });
+  }
   function addToggle(input) {
     var wrap = document.createElement('span');
     wrap.className = 'pw';
@@ -327,12 +345,7 @@ inline const char* setupFormJavaScript() {
     btn.textContent = 'Show';
     btn.setAttribute('aria-pressed', 'false');
     btn.setAttribute('aria-label', 'show or hide the typed value');
-    btn.addEventListener('click', function () {
-      var show = input.type === 'password';
-      input.type = show ? 'text' : 'password';
-      btn.textContent = show ? 'Hide' : 'Show';
-      btn.setAttribute('aria-pressed', show ? 'true' : 'false');
-    });
+    bindToggle(input, btn);
     wrap.appendChild(btn);
   }
   var pws = document.querySelectorAll('input[type=password]');
@@ -345,7 +358,14 @@ inline const char* setupFormJavaScript() {
     var pw = fresh.querySelector('input.pass');
     var op = fresh.querySelector('input.open');
     if (ss) ss.value = '';
-    if (pw) { pw.value = ''; resetToggle(pw); }
+    if (pw) {
+      pw.value = '';
+      resetToggle(pw);
+      // #177: the clone's Show button arrived without its click listener
+      // (cloneNode copies attributes and children, never listeners) —
+      // re-bind it or the added row can never reveal its box.
+      bindToggle(pw, pw.parentNode.querySelector('.showpw'));
+    }
     if (op) op.checked = false;
     fieldset.insertBefore(fresh, addWrap);
     renumber();
